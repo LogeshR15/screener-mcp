@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Virtual environment
+.venv/
+venv/
+env/
+
+# macOS
+.DS_Store
+
+# Claude Code project settings
+.claude/
+
+# Credentials (never commit these)
+.env
+*.env
+
+# IDE
+.vscode/
+.idea/
