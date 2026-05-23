@@ -6,13 +6,34 @@ build-backend = "setuptools.backends.legacy:build"
 name = "screener-mcp"
 version = "0.1.0"
 description = "Indian Stock Research MCP server powered by Screener.in"
+readme = "README.md"
+license = { text = "MIT" }
 requires-python = ">=3.11"
+authors = [{ name = "LogeshR15", url = "https://github.com/LogeshR15" }]
+keywords = ["mcp", "screener", "indian-stocks", "nse", "bse", "stock-research", "claude", "llm"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Financial and Insurance Industry",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Office/Business :: Financial :: Investment",
+]
 dependencies = [
     "mcp>=1.0.0",
     "httpx>=0.27.0",
     "beautifulsoup4>=4.12.0",
     "lxml>=5.0.0",
 ]
+
+[project.optional-dependencies]
+dev = ["pytest", "pytest-asyncio"]
+
+[project.urls]
+Homepage = "https://github.com/LogeshR15/screener-mcp"
+Repository = "https://github.com/LogeshR15/screener-mcp"
+Issues = "https://github.com/LogeshR15/screener-mcp/issues"
 
 [project.scripts]
 screener-mcp = "screener_mcp.server:main"

@@ -31,6 +31,7 @@ Run:
   or via Claude Code MCP config (see README).
 """
 
+import httpx
 from mcp.server.fastmcp import FastMCP
 from .tools.company_tools import (
     search_company as _search_company,
@@ -51,6 +52,28 @@ from .tools.analysis_tools import (
     get_red_flags as _red_flags,
     beginner_explainer as _beginner,
 )
+
+def _safe(result):
+    """Wrap a coroutine so network/auth errors become readable messages."""
+    import asyncio, functools
+    async def wrapper(*args, **kwargs):
+        try:
+            return await result(*args, **kwargs)
+        except PermissionError as e:
+            return f"**Login required.** {e}\n\nSet `SCREENER_USERNAME` and `SCREENER_PASSWORD` env vars, then restart the server."
+        except httpx.TimeoutException:
+            return "**Request timed out.** Screener.in is taking too long to respond — try again in a moment."
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == 404:
+                return f"**Company not found.** Check the symbol and try `search_company()` to find the correct NSE/BSE code."
+            return f"**Screener.in returned an error** ({e.response.status_code}). The site may be down — try again shortly."
+        except httpx.NetworkError:
+            return "**Cannot reach Screener.in.** Check your internet connection and try again."
+        except Exception as e:
+            return f"**Unexpected error**: {type(e).__name__}: {e}\n\nIf this persists, please open an issue at https://github.com/LogeshR15/screener-mcp/issues"
+    functools.update_wrapper(wrapper, result)
+    return wrapper
+
 
 mcp = FastMCP(
     "Screener Stock Research",
@@ -89,7 +112,7 @@ async def search_company(query: str) -> str:
       search_company("Jyothy Labs")
       search_company("ITC")
     """
-    return await _search_company(query)
+    return await _safe(_search_company)(query)
 
 
 @mcp.tool()
@@ -113,7 +136,7 @@ async def screen_stocks(query: str, limit: int = 25) -> str:
       "Profit growth 5Years > 20 AND Sales growth 5Years > 15 AND Debt to equity < 0.3"
       "Dividend yield > 3 AND Debt to equity < 0.5 AND Return on equity > 15"
     """
-    return await _screen(query, limit=limit)
+    return await _safe(_screen)(query, limit=limit)
 
 
 @mcp.tool()
@@ -143,7 +166,7 @@ async def screen_by_theme(theme: str, limit: int = 20) -> str:
       screen_by_theme("compounders")
       screen_by_theme("chemicals")
     """
-    return await _theme(theme, limit=limit)
+    return await _safe(_theme)(theme, limit=limit)
 
 
 @mcp.tool()
@@ -152,7 +175,7 @@ async def list_investment_themes() -> str:
     List all available pre-built investment themes with their screening criteria.
     Use this to discover what thematic screens are available.
     """
-    return await _list_themes()
+    return await _safe(_list_themes)()
 
 
 # ─── Company Deep Dive ─────────────────────────────────────────────────────────
@@ -167,7 +190,7 @@ async def get_company_overview(symbol: str, financial_type: str = "consolidated"
 
     This is the best starting point for any company analysis.
     """
-    return await _get_overview(symbol, financial_type)
+    return await _safe(_get_overview)(symbol, financial_type)
 
 
 @mcp.tool()
@@ -192,7 +215,7 @@ async def get_financials(
     valid = {"profit_loss", "balance_sheet", "cash_flow", "ratios"}
     if statement not in valid:
         return f"Invalid statement type '{statement}'. Choose from: {', '.join(valid)}"
-    return await _get_financials(symbol, statement, financial_type, years)
+    return await _safe(_get_financials)(symbol, statement, financial_type, years)
 
 
 @mcp.tool()
@@ -205,7 +228,7 @@ async def get_quarterly_results(symbol: str, financial_type: str = "consolidated
 
     symbol: NSE/BSE symbol (e.g., "TCS", "WIPRO", "MARUTI")
     """
-    return await _get_quarterly(symbol, financial_type)
+    return await _safe(_get_quarterly)(symbol, financial_type)
 
 
 @mcp.tool()
@@ -223,7 +246,7 @@ async def get_shareholding_pattern(symbol: str) -> str:
 
     symbol: NSE/BSE symbol
     """
-    return await _get_shareholding(symbol)
+    return await _safe(_get_shareholding)(symbol)
 
 
 @mcp.tool()
@@ -236,7 +259,7 @@ async def get_peer_comparison(symbol: str, financial_type: str = "consolidated")
 
     symbol: NSE/BSE symbol
     """
-    return await _get_peers(symbol, financial_type)
+    return await _safe(_get_peers)(symbol, financial_type)
 
 
 @mcp.tool()
@@ -255,7 +278,7 @@ async def compare_companies(symbols: list[str], financial_type: str = "consolida
       compare_companies(["TCS", "INFY", "WIPRO", "HCLTECH"])
       compare_companies(["PIDILITIND", "ASIANPAINT", "BERGEPAINT"])
     """
-    return await _compare(symbols, financial_type)
+    return await _safe(_compare)(symbols, financial_type)
 
 
 # ─── Analysis Tools ────────────────────────────────────────────────────────────
@@ -278,7 +301,7 @@ async def get_full_analysis(symbol: str, financial_type: str = "consolidated") -
 
     symbol: NSE/BSE symbol
     """
-    return await _full_analysis(symbol, financial_type)
+    return await _safe(_full_analysis)(symbol, financial_type)
 
 
 @mcp.tool()
@@ -298,7 +321,7 @@ async def analyze_red_flags(symbol: str, financial_type: str = "consolidated") -
 
     symbol: NSE/BSE symbol
     """
-    return await _red_flags(symbol, financial_type)
+    return await _safe(_red_flags)(symbol, financial_type)
 
 
 @mcp.tool()
@@ -317,7 +340,7 @@ async def explain_for_beginners(symbol: str) -> str:
 
     symbol: NSE/BSE symbol
     """
-    return await _beginner(symbol)
+    return await _safe(_beginner)(symbol)
 
 
 # ─── Resources ────────────────────────────────────────────────────────────────
