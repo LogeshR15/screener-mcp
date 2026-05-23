@@ -9,7 +9,7 @@ description = "Indian Stock Research MCP server powered by Screener.in"
 readme = "README.md"
 license = { text = "MIT" }
 requires-python = ">=3.11"
-authors = [{ name = "LogeshR15", url = "https://github.com/LogeshR15" }]
+authors = [{ name = "LogeshR15" }]
 keywords = ["mcp", "screener", "indian-stocks", "nse", "bse", "stock-research", "claude", "llm"]
 classifiers = [
     "Development Status :: 4 - Beta",
