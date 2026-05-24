@@ -163,3 +163,8 @@ All data comes from [Screener.in](https://www.screener.in) — India's most popu
 ## Contributing
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) — adding a new tool takes ~10 minutes.
+
+## contact
+
+Mail: logeshl2003@gmail.com
+Linkedin: inkedin.com/in/logesh-ramasamy/
