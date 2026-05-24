@@ -157,3 +157,4 @@ Operators: `>`, `<`, `=`, `AND`
 ## Questions?
 
 Open an issue at [github.com/LogeshR15/screener-mcp/issues](https://github.com/LogeshR15/screener-mcp/issues).
+Gmail; logeshl2003@gmail.com
