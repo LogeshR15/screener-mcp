@@ -1,4 +1,4 @@
-# screener-mcp — Indian Stock Research for Claude
+# screener-mcp — Indian Stock Research for Claude - 300+  Active users
 
 Turn Claude into a personal Indian equity analyst powered by live [Screener.in](https://www.screener.in) data.
 
