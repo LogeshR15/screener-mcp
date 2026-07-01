@@ -1,5 +1,9 @@
 # screener-mcp — Indian Stock Research for Claude - 300+  Active users
 
+Contact; logeshl2003@gmail.com 
+inkedin.com/in/logesh-ramasamy/
+
+
 Turn Claude into a personal Indian equity analyst powered by live [Screener.in](https://www.screener.in) data.
 
 > **Ask Claude naturally** — it fetches real financial data and reasons over it like a seasoned analyst.
