@@ -23,18 +23,35 @@ def parse_search_results(json_data: list) -> list[dict]:
     """Parse company search API response."""
     results = []
     for item in json_data:
+        url = item.get("url", "")
+        # The API appends a "Search everywhere: <query>" row pointing at
+        # /full-text-search/ with a null id. It is not a company - drop it,
+        # otherwise it is listed as a result with a nonsense symbol.
+        if not url.strip("/").startswith("company/"):
+            continue
         results.append({
             "name": item.get("name", ""),
-            "url": item.get("url", ""),
-            "screener_id": _extract_id(item.get("url", "")),
+            "url": url,
+            "screener_id": _extract_id(url),
         })
     return results
 
 
 def _extract_id(url: str) -> str:
-    """Extract symbol from URL like /company/TCS/consolidated/"""
+    """
+    Extract the symbol from a Screener company URL.
+
+    /company/TCS/consolidated/        -> TCS
+    /company/531569/consolidated/     -> 531569  (BSE code, used as the symbol)
+    /company/id/246883/consolidated/  -> 246883  (internal-id form, used for
+                                                  companies with no ticker)
+    """
     parts = [p for p in url.strip("/").split("/") if p]
     if len(parts) >= 2 and parts[0] == "company":
+        # /company/id/<n>/... - the symbol is the segment after "id",
+        # not the literal string "id".
+        if parts[1] == "id" and len(parts) >= 3:
+            return parts[2]
         return parts[1]
     if parts:
         return parts[-1]
