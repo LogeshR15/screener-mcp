@@ -418,7 +418,7 @@ def _compute_red_flags(ratios: dict[str, str]) -> list[dict[str, str]]:
 
 
 @mcp.tool()
-async def compare_stocks_ui(symbols: str) -> dict:
+async def compare_stocks_ui(symbols: list[str] | str) -> dict:
     """
     Interactive stock comparison dashboard.
 
@@ -427,11 +427,12 @@ async def compare_stocks_ui(symbols: str) -> dict:
     Renders as an interactive dashboard in Claude Desktop.
 
     Args:
-        symbols: Comma-separated stock symbols (e.g., "TCS,INFOSYS,WIPRO")
+        symbols: Stock symbols, either as a list (["TCS", "INFY", "WIPRO"])
+            or a comma-separated string ("TCS,INFY,WIPRO")
 
     Examples:
-      compare_stocks_ui("TCS,INFY,WIPRO")
-      compare_stocks_ui("HDFCBANK,ICICIBANK,AXISBANK")
+      compare_stocks_ui(["TCS", "INFY", "WIPRO"])
+      compare_stocks_ui(["HDFCBANK", "ICICIBANK", "AXISBANK"])
       compare_stocks_ui("HUL,ITC,NESTLEIND")
 
     Note: use NSE trading symbols, not company names (e.g. "INFY" not "INFOSYS").
@@ -440,7 +441,9 @@ async def compare_stocks_ui(symbols: str) -> dict:
     from .client import get_client
     from .parsers.company import parse_overview
 
-    stock_list = [s.strip().upper() for s in symbols.split(",")][:6]
+    if isinstance(symbols, str):
+        symbols = symbols.split(",")
+    stock_list = [s.strip().upper() for s in symbols if s.strip()][:6]
     client = await get_client()
 
     async def fetch(sym: str):

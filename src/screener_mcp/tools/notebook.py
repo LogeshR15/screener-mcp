@@ -51,7 +51,7 @@ async def notebook_ai(
     Manage research notes for stocks.
 
     action options:
-      "create"    — start a new note (requires symbol + content)
+      "create"    — start a new note (requires symbol + content); "save" is an alias
       "append"    — add to an existing note (requires note_id + content)
       "read"      — read all entries in a note (requires note_id)
       "list"      — list all notes, optionally filtered by symbol
@@ -59,6 +59,8 @@ async def notebook_ai(
       "delete"    — delete a note (requires note_id)
     """
     action = action.lower().strip()
+    if action == "save":
+        action = "create"
 
     # ── create ────────────────────────────────────────────────────────────────
     if action == "create":
