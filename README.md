@@ -38,12 +38,16 @@ git clone https://github.com/LogeshR15/screener-mcp
 cd screener-mcp
 python3.11 -m venv .venv
 source .venv/bin/activate
+pip install --upgrade pip
 pip install -e .
 
 claude mcp add screener -s user -- \
   $(pwd)/.venv/bin/python3.11 \
   $(pwd)/run_server.py
 ```
+
+> No `python3.11` on your machine? Any Python **3.11+** works (e.g. `python3.12 -m venv .venv`) — just point `claude mcp add` at that same interpreter.
+> `pip install -e .` fails with "editable mode currently requires a setuptools-based build"? Your venv's `pip` is too old — run `pip install --upgrade pip` first (as above), then retry.
 
 ---
 
@@ -227,6 +231,9 @@ screener-mcp/
 - Financial data lags by ~1 quarter
 - Document analysis requires machine-readable PDFs (scanned/image-only PDFs may fail)
 - NSE bulk deals only capture single trades > 0.5% of equity
+- `get_company_announcements` and `search_shareholder` depend on NSE's public API, which
+  frequently rate-limits or blocks server IPs (403/404 responses) — if a query returns
+  "no data found", it may be NSE blocking the request rather than an empty result
 - This is a research tool — not financial advice
 
 ---
