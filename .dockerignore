@@ -1,0 +1,13 @@
+.git
+.venv
+venv
+env
+__pycache__
+*.pyc
+*.egg-info
+dist
+build
+.DS_Store
+.vscode
+.idea
+CONTRIBUTING.md

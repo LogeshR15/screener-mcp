@@ -116,6 +116,34 @@ a reverse proxy, etc.), then point the client at `https://your-host/mcp`.
 > unauthenticated — especially if you set `SCREENER_USERNAME`/`PASSWORD`,
 > since anyone who can reach the URL would act as your Screener.in account.
 
+### Deploying to Zoho Catalyst AppSail
+
+A `Dockerfile` is included, pre-built for AppSail's custom Docker runtime
+(picks up `X_ZOHO_CATALYST_LISTEN_PORT` automatically, exposes `/health`).
+It installs the full `[ai]` extras (document analysis included) — expect a
+slow first build (~1-2GB with torch).
+
+```bash
+# 1. Build and tag the image
+docker build -t screener-mcp:latest .
+
+# 2. From your Catalyst project root (run `catalyst init` first if needed)
+catalyst deploy appsail --name screener-mcp --source docker://screener-mcp:latest
+```
+
+`catalyst appsail:add` / `catalyst init` are interactive (menu-driven, need
+your Zoho login) — run those yourself first. After that, redeploys with
+`--name`/`--source` flags are non-interactive.
+
+Set `SCREENER_USERNAME`/`SCREENER_PASSWORD` via Console → AppSail → your
+service → Configuration → Environment Variables (or in `app-config.json`
+`env_variables` if you switch to a linked deploy).
+
+Once deployed, your MCP Server URL is:
+```
+https://<service-name>-<ZAID>.catalystappsail.com/mcp
+```
+
 ---
 
 ## Tools — 23 total

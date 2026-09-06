@@ -106,7 +106,15 @@ def _safe(result):
 mcp = FastMCP(
     "Screener Stock Research",
     host=os.getenv("MCP_HOST", "0.0.0.0"),
-    port=int(os.getenv("PORT", os.getenv("MCP_PORT", "8000"))),
+    # Catalyst AppSail injects the listen port via X_ZOHO_CATALYST_LISTEN_PORT —
+    # always prefer it when present, falling back to generic PORT/MCP_PORT
+    # env vars for other hosts (Render, Railway, Fly.io, etc.).
+    port=int(
+        os.getenv("X_ZOHO_CATALYST_LISTEN_PORT")
+        or os.getenv("PORT")
+        or os.getenv("MCP_PORT")
+        or "8000"
+    ),
     instructions="""
 You are an expert Indian equity analyst with deep knowledge of Indian stock markets,
 Screener.in data, and long-term investing principles.
@@ -850,6 +858,14 @@ else:
 def stock_comparison_ui() -> str:
     """Stock Comparison Dashboard — interactive UI for comparing multiple stocks."""
     return _ui_bundle
+
+
+@mcp.custom_route("/health", methods=["GET"])
+async def health_check(request):
+    """Plain HTTP health check for platforms (e.g. Catalyst AppSail) that
+    poll a non-MCP endpoint to confirm the instance is up."""
+    from starlette.responses import JSONResponse
+    return JSONResponse({"status": "ok"})
 
 
 # ─── Entry point ──────────────────────────────────────────────────────────────
