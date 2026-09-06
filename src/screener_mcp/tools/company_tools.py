@@ -17,6 +17,8 @@ from ..parsers.company import (
     parse_ratios,
     parse_shareholding,
     parse_peers,
+    parse_peers_ajax,
+    parse_warehouse_id,
     parse_full_page,
 )
 from ..parsers.screener import parse_search_results
@@ -197,7 +199,19 @@ async def get_peers(symbol: str, financial_type: FinancialType = "consolidated")
     if financial_type == "consolidated":
         path += "consolidated/"
     html = await client.get_html(path)
-    peers = parse_peers(html)
+
+    # Screener.in's real peer table is loaded client-side via an AJAX call
+    # keyed on the company's "warehouse id" (distinct from its numeric id):
+    #   GET /api/company/{warehouse_id}/peers/
+    # Fetch that endpoint directly instead of relying on the initial page load.
+    warehouse_id = parse_warehouse_id(html)
+    peers: list[dict[str, str]] = []
+    if warehouse_id:
+        ajax_html = await client.get_html(f"/api/company/{warehouse_id}/peers/")
+        peers = parse_peers_ajax(ajax_html)
+
+    if not peers:
+        peers = parse_peers(html)
 
     if not peers:
         return (

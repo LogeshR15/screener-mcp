@@ -224,13 +224,61 @@ def parse_shareholding(html: str) -> dict[str, Any]:
     return {"quarters": quarters, "rows": rows}
 
 
+def parse_warehouse_id(html: str) -> str | None:
+    """
+    Extract the `data-warehouse-id` from the company page's #company-info div.
+
+    This id (distinct from the company's numeric id) is required to call
+    Screener.in's AJAX peer-comparison endpoint:
+      GET /api/company/{warehouse_id}/peers/
+    """
+    soup = BeautifulSoup(html, "lxml")
+    info = soup.find(id="company-info")
+    if not info:
+        return None
+    return info.get("data-warehouse-id")
+
+
+def parse_peers_ajax(html: str) -> list[dict[str, str]]:
+    """
+    Parse the peer comparison table returned by Screener.in's AJAX endpoint
+    `/api/company/{warehouse_id}/peers/` (an HTML fragment, not a full page).
+
+    Unlike the tables on a full company page, this fragment has no <thead> —
+    the header row is the first <tr> inside <tbody> and is made of <th> cells,
+    so it needs its own parsing instead of the standard `_table_to_list`.
+    """
+    soup = BeautifulSoup(html, "lxml")
+    table = soup.find("table")
+    if not table:
+        return []
+
+    all_rows = table.select("tbody tr") or table.select("tr")
+    if not all_rows:
+        return []
+
+    headers = [_clean(th.get_text()) for th in all_rows[0].find_all("th")]
+    if not headers:
+        return []
+
+    rows = []
+    for tr in all_rows[1:]:
+        cells = [_clean(td.get_text()) for td in tr.find_all("td")]
+        if not cells:
+            continue
+        row = {h: (cells[i] if i < len(cells) else "") for i, h in enumerate(headers)}
+        rows.append(row)
+    return rows
+
+
 def parse_peers(html: str) -> list[dict[str, str]]:
     """
-    Parse the peer comparison table.
+    Parse the peer comparison table from a full company page.
 
     Screener.in loads the peer table via AJAX after page load, so the initial
     HTML contains only the sector breadcrumb context, not the actual rows.
-    We return whatever is available so the tool can surface useful context.
+    Prefer `parse_peers_ajax` (against the AJAX endpoint) for real peer data —
+    this function only returns sector breadcrumb context as a fallback.
     """
     soup = BeautifulSoup(html, "lxml")
     section = soup.find(id="peers")
