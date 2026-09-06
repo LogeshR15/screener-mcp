@@ -19,6 +19,8 @@ Tools exposed to Claude:
   get_document_list           — list annual reports and earnings call transcripts
   analyze_annual_report       — ask questions over annual report PDFs (RAG)
   analyze_earnings_call       — ask questions over earnings call transcripts (RAG)
+  ask_company_research        — ask questions across ALL of a company's cached documents at once
+  search_market_commentary    — semantic search for a question across multiple companies' indexed documents
   get_company_announcements   — fetch recent NSE corporate announcements
   search_shareholder          — find bulk deal activity by investor name
   get_commodity_prices        — commodity price context and company impact analysis
@@ -70,6 +72,8 @@ from .tools.documents import (
     get_document_list as _get_document_list,
     analyze_annual_report as _analyze_annual_report,
     analyze_earnings_call as _analyze_earnings_call,
+    ask_company_research as _ask_company_research,
+    search_market_commentary as _search_market_commentary,
 )
 from .tools.announcements import get_company_announcements as _get_announcements
 from .tools.shareholders import search_shareholder as _search_shareholder
@@ -550,6 +554,63 @@ async def analyze_earnings_call(
       analyze_earnings_call("TCS", "Q2FY25", "What did they say about deal wins?")
     """
     return await _safe(_analyze_earnings_call)(symbol, quarter, question, pdf_url or None)
+
+
+@mcp.tool()
+async def ask_company_research(
+    symbol: str,
+    question: str,
+    max_annual_reports: int = 3,
+    max_earnings_calls: int = 4,
+) -> str:
+    """
+    Ask a question across ALL of a company's cached documents at once —
+    multiple annual reports AND earnings call transcripts together — instead
+    of picking one document at a time like analyze_annual_report/analyze_earnings_call.
+
+    Best for cross-year or cross-quarter questions that a single document can't
+    answer, e.g. "how has capex strategy evolved over the last 3 years?" or
+    "has management's tone on margins changed across recent quarters?"
+
+    Indexes (or reuses cached indexes for) the most recent `max_annual_reports`
+    annual reports and `max_earnings_calls` earnings calls, then runs one
+    semantic search across all of them, ranked by relevance.
+
+    Requires: pip install pdfplumber sentence-transformers chromadb
+
+    Examples:
+      ask_company_research("TCS", "How has capex strategy evolved over the last 3 years?")
+      ask_company_research("HDFCBANK", "Has management's tone on NIM changed across recent quarters?", max_annual_reports=2)
+    """
+    return await _safe(_ask_company_research)(
+        symbol, question, max_annual_reports, max_earnings_calls
+    )
+
+
+@mcp.tool()
+async def search_market_commentary(
+    question: str,
+    symbols: list[str],
+    top_k_per_symbol: int = 3,
+) -> str:
+    """
+    Semantic search for a question across MULTIPLE companies' already-indexed
+    documents at once — e.g. "which of these companies mentioned raw material
+    cost pressure in their recent earnings calls?"
+
+    Only searches documents already indexed via analyze_annual_report,
+    analyze_earnings_call, or ask_company_research for each symbol — it does
+    NOT download new documents, so cost/latency stays bounded no matter how
+    many symbols are passed. Run ask_company_research(symbol, ...) first for
+    any symbol you want included that hasn't been indexed yet.
+
+    Requires: pip install pdfplumber sentence-transformers chromadb
+
+    Examples:
+      search_market_commentary("raw material cost pressure", ["TATASTEEL", "JSWSTEEL", "SAIL"])
+      search_market_commentary("management outlook on margins", ["ITC", "HINDUNILVR", "NESTLEIND"])
+    """
+    return await _safe(_search_market_commentary)(question, symbols, True, top_k_per_symbol)
 
 
 # ─── Corporate Actions & Events ────────────────────────────────────────────────

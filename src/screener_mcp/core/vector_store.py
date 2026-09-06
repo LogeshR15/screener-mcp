@@ -40,6 +40,17 @@ class VectorStore:
         except Exception:
             return False
 
+    def list_collections(self, prefix: str = "") -> list[str]:
+        """List names of all persisted collections, optionally filtered by prefix."""
+        try:
+            client = self._get_client()
+            names = [c.name for c in client.list_collections()]
+            if prefix:
+                names = [n for n in names if n.startswith(prefix)]
+            return names
+        except Exception:
+            return []
+
     def get_or_create_collection(self, name: str):
         return self._get_client().get_or_create_collection(
             name=name, metadata={"hnsw:space": "cosine"}

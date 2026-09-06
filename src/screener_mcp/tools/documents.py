@@ -12,7 +12,8 @@ from bs4 import BeautifulSoup
 
 from ..client import get_client
 from ..core.nse_client import get_nse_client
-from ..core.rag import process_document, query_document
+from ..core.rag import process_document, query_document, query_documents
+from ..core.vector_store import get_vector_store
 
 logger = logging.getLogger(__name__)
 
@@ -167,7 +168,11 @@ async def analyze_annual_report(
 
     collection_name = f"{symbol.upper()}_{year}_annual"
 
-    status = await process_document(pdf_url, collection_name)
+    status = await process_document(
+        pdf_url,
+        collection_name,
+        extra_metadata={"symbol": symbol.upper(), "doc_type": "annual_report", "label": str(year)},
+    )
     if status["status"] == "error":
         return (
             f"**Failed to process annual report PDF.**\n\n"
@@ -255,7 +260,11 @@ async def analyze_earnings_call(
 
     collection_name = f"{symbol.upper()}_{quarter_clean}_transcript"
 
-    status = await process_document(pdf_url, collection_name)
+    status = await process_document(
+        pdf_url,
+        collection_name,
+        extra_metadata={"symbol": symbol.upper(), "doc_type": "earnings_call", "label": quarter_clean},
+    )
     if status["status"] == "error":
         return (
             f"**Failed to process earnings call transcript.**\n\n"
@@ -293,3 +302,184 @@ Focus on:
 - Any surprises vs. expectations
 - Forward-looking statements and their credibility
 """
+
+
+async def ask_company_research(
+    symbol: str,
+    question: str,
+    max_annual_reports: int = 3,
+    max_earnings_calls: int = 4,
+    include_annual_reports: bool = True,
+    include_earnings_calls: bool = True,
+) -> str:
+    """
+    Ask a question that's answered by searching across ALL of a company's cached
+    documents at once (multiple annual reports + earnings call transcripts),
+    instead of one document at a time like analyze_annual_report/analyze_earnings_call.
+
+    Good for cross-year/cross-quarter questions, e.g. "how has capex strategy
+    evolved over the last 3 years?" — something a single-document query can't answer.
+
+    Indexes (or reuses already-cached indexes for) the most recent
+    `max_annual_reports` annual reports and `max_earnings_calls` transcripts,
+    then runs one semantic search across all of them together.
+    """
+    symbol = symbol.upper()
+    client = await get_client()
+    html = await client.get_html(f"/company/{symbol}/consolidated/")
+
+    reports = _parse_annual_reports(html) if include_annual_reports else []
+    if not reports and include_annual_reports:
+        nse = await get_nse_client()
+        reports = await nse.get_annual_reports(symbol)
+    calls = _parse_earnings_calls(html) if include_earnings_calls else []
+
+    reports = sorted(reports, key=lambda r: r.get("year", ""), reverse=True)[:max_annual_reports]
+    calls = calls[:max_earnings_calls]
+
+    if not reports and not calls:
+        return (
+            f"**No documents found for {symbol}.**\n\n"
+            f"Use `get_document_list('{symbol}')` to check what's available."
+        )
+
+    collection_names: list[str] = []
+    indexed_labels: list[str] = []
+    errors: list[str] = []
+
+    for r in reports:
+        name = f"{symbol}_{r.get('year', 'Unknown')}_annual"
+        status = await process_document(
+            r["url"], name,
+            extra_metadata={"symbol": symbol, "doc_type": "annual_report", "label": str(r.get("year"))},
+        )
+        if status["status"] == "error":
+            errors.append(f"Annual Report {r.get('year')}: {status.get('error')}")
+            continue
+        collection_names.append(name)
+        indexed_labels.append(f"Annual Report {r.get('year')}")
+
+    for c in calls:
+        quarter = c.get("quarter", "Unknown").upper().replace(" ", "")
+        name = f"{symbol}_{quarter}_transcript"
+        status = await process_document(
+            c["url"], name,
+            extra_metadata={"symbol": symbol, "doc_type": "earnings_call", "label": quarter},
+        )
+        if status["status"] == "error":
+            errors.append(f"Earnings Call {quarter}: {status.get('error')}")
+            continue
+        collection_names.append(name)
+        indexed_labels.append(f"Earnings Call {quarter}")
+
+    if not collection_names:
+        return (
+            f"**Failed to index any documents for {symbol}.**\n\n"
+            + "\n".join(f"  - {e}" for e in errors)
+        )
+
+    chunks = await query_documents(collection_names, question, top_k=8, top_k_per_collection=4)
+    if not chunks:
+        return f"**No relevant content found** for: '{question}'\n\nSearched: {', '.join(indexed_labels)}"
+
+    context = "\n\n---\n\n".join(
+        f"[Excerpt {i} — {c['metadata'].get('doc_type', '?')} "
+        f"({c['metadata'].get('label', '?')}), Pages {c['metadata'].get('pages', '?')}, "
+        f"relevance {c['score']}]\n{c['text']}"
+        for i, c in enumerate(chunks, 1)
+    )
+
+    note = f"\n\n**Note:** could not index — {'; '.join(errors)}" if errors else ""
+
+    return f"""# Whole-Company Research — {symbol}
+
+**Question:** {question}
+**Documents searched:** {', '.join(indexed_labels)}{note}
+
+## Relevant Excerpts (across all documents, ranked by relevance)
+
+{context}
+
+---
+**Analyst task:** Using the excerpts above — which span multiple years/quarters —
+answer: "{question}"
+
+Structure your response as:
+1. **Direct Answer** — synthesized across all sources found
+2. **How it's changed over time** — if excerpts span multiple periods, note the trend
+3. **Supporting Evidence** — cite which document/period each point comes from
+4. **Caveats** — anything incomplete or that warrants checking the full document
+"""
+
+
+async def search_market_commentary(
+    question: str,
+    symbols: list[str],
+    only_cached: bool = True,
+    top_k_per_symbol: int = 3,
+) -> str:
+    """
+    Semantic search for a question across MULTIPLE companies' cached documents
+    at once — e.g. "which of these companies mentioned raw material cost
+    pressure in their recent earnings calls?"
+
+    By default (only_cached=True) this searches whatever has already been
+    indexed via analyze_annual_report / analyze_earnings_call / ask_company_research
+    for each symbol — it does not download new documents, to keep this fast
+    and bounded regardless of how many symbols are passed. Run
+    ask_company_research(symbol, ...) first for any symbol you want included
+    that hasn't been indexed yet.
+    """
+    store = get_vector_store()
+    symbols = [s.upper() for s in symbols]
+
+    results_by_symbol: dict[str, list[dict]] = {}
+    uncached_symbols: list[str] = []
+
+    for sym in symbols:
+        collections = store.list_collections(prefix=f"{sym}_")
+        if not collections:
+            uncached_symbols.append(sym)
+            continue
+        chunks = await query_documents(
+            collections, question, top_k=top_k_per_symbol, top_k_per_collection=top_k_per_symbol
+        )
+        if chunks:
+            results_by_symbol[sym] = chunks
+
+    if not results_by_symbol:
+        hint = (
+            f"\n\nNone of these symbols have indexed documents yet. Run "
+            f"`ask_company_research(symbol, question)` for each one first, "
+            f"then retry this search."
+            if uncached_symbols == symbols
+            else ""
+        )
+        return f"**No relevant content found** across {', '.join(symbols)}.{hint}"
+
+    lines = [f"# Cross-Company Search", "", f"**Question:** {question}", ""]
+
+    for sym, chunks in results_by_symbol.items():
+        lines.append(f"## {sym}")
+        for c in chunks:
+            meta = c["metadata"]
+            lines.append(
+                f"- [{meta.get('doc_type', '?')} {meta.get('label', '?')}, "
+                f"pages {meta.get('pages', '?')}, relevance {c['score']}]"
+            )
+            lines.append(f"  {c['text'][:400]}{'...' if len(c['text']) > 400 else ''}")
+        lines.append("")
+
+    if uncached_symbols:
+        lines.append(f"**Not yet indexed (skipped):** {', '.join(uncached_symbols)}")
+        lines.append(
+            "Run `ask_company_research(symbol, question)` for these to include them."
+        )
+
+    lines.append("")
+    lines.append(
+        f'**Analyst task:** Using the excerpts above, answer "{question}" '
+        f"— compare/contrast across the companies that had relevant excerpts."
+    )
+
+    return "\n".join(lines)

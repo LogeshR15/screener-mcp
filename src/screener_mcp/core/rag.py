@@ -125,9 +125,18 @@ def _chunk_pages(pages: list[dict]) -> list[dict]:
     return chunks
 
 
-async def process_document(url: str, collection_name: str, force: bool = False) -> dict:
+async def process_document(
+    url: str,
+    collection_name: str,
+    force: bool = False,
+    extra_metadata: Optional[dict] = None,
+) -> dict:
     """
     Download, parse, embed, and index a PDF document.
+
+    extra_metadata: merged into every chunk's metadata (e.g. symbol, doc_type,
+    label) so results can be traced back to their source document when
+    searching across multiple documents at once.
 
     Returns:
       {"status": "cached"|"processed"|"error", "chunks": N, "pages": N}
@@ -155,7 +164,11 @@ async def process_document(url: str, collection_name: str, force: bool = False) 
 
         ids = [f"{collection_name}_{c['chunk_idx']}" for c in chunks]
         metadatas = [
-            {"pages": str(c["pages"]), "page_start": c["page_start"]}
+            {
+                "pages": str(c["pages"]),
+                "page_start": c["page_start"],
+                **(extra_metadata or {}),
+            }
             for c in chunks
         ]
 
@@ -178,3 +191,29 @@ async def query_document(collection_name: str, question: str, top_k: int = 5) ->
     loop = asyncio.get_event_loop()
     q_embedding = await loop.run_in_executor(None, _embed_one, question)
     return store.query(collection_name, q_embedding, top_k=top_k)
+
+
+async def query_documents(
+    collection_names: list[str], question: str, top_k: int = 5, top_k_per_collection: int = 5
+) -> list[dict]:
+    """
+    Semantic search across multiple document collections at once, merging
+    results by score. Each returned chunk's metadata carries whatever
+    extra_metadata (symbol, doc_type, label) was set when it was indexed,
+    so the caller can attribute each excerpt to its source document.
+    """
+    store = get_vector_store()
+    loop = asyncio.get_event_loop()
+    q_embedding = await loop.run_in_executor(None, _embed_one, question)
+
+    all_chunks: list[dict] = []
+    for name in collection_names:
+        if not store.collection_exists(name):
+            continue
+        chunks = store.query(name, q_embedding, top_k=top_k_per_collection)
+        for c in chunks:
+            c["collection"] = name
+        all_chunks.extend(chunks)
+
+    all_chunks.sort(key=lambda c: c["score"], reverse=True)
+    return all_chunks[:top_k]

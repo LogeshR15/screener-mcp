@@ -16,6 +16,8 @@
 "Find hidden gems below ₹5000 crore market cap"
 "What did TCS management say about margins in Q3FY25?"
 "Summarize the key risks from Reliance's 2024 annual report"
+"How has ITC's capex strategy evolved over the last 3 years?"
+"Which of TATASTEEL, JSWSTEEL, and SAIL mentioned raw material cost pressure recently?"
 "Show me recent dividend announcements for HDFCBANK"
 "How does copper price affect Havells and Polycab?"
 "Save a research note on TITAN — strong Q3, watch margins"
@@ -86,7 +88,7 @@ Then ask Claude: `"Search for Asian Paints"` — you should get results.
 
 ---
 
-## Tools — 21 total
+## Tools — 23 total
 
 ### Company Research
 
@@ -117,10 +119,13 @@ Then ask Claude: `"Search for Asian Paints"` — you should get results.
 | Tool | What it does | Extra deps needed |
 |------|-------------|:---:|
 | `get_document_list` | List annual reports & earnings call transcripts | No |
-| `analyze_annual_report` | Ask any question over annual report PDFs | Yes |
-| `analyze_earnings_call` | Ask any question over earnings call transcripts | Yes |
+| `analyze_annual_report` | Ask any question over one annual report PDF | Yes |
+| `analyze_earnings_call` | Ask any question over one earnings call transcript | Yes |
+| `ask_company_research` | Ask a question across ALL of a company's cached documents at once (multiple years/quarters) | Yes |
+| `search_market_commentary` | Search a question across multiple companies' already-indexed documents at once | Yes |
 
 > Uses a local RAG pipeline: PDF → pdfplumber → ChromaDB → sentence-transformers. Results are cached on disk — the same report is never re-downloaded or re-indexed.
+> `ask_company_research` and `search_market_commentary` build on the same cache — the former indexes a company's recent documents and searches across them together (good for "how has X changed over time?"); the latter searches only what's *already* indexed across several symbols (good for "which of these companies mentioned Y?").
 
 ### Corporate Events *(new)*
 
