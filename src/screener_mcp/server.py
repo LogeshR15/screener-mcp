@@ -46,6 +46,7 @@ Run:
 
 import httpx
 import json
+import os
 import re
 from pathlib import Path
 from mcp.server.fastmcp import FastMCP
@@ -104,6 +105,8 @@ def _safe(result):
 
 mcp = FastMCP(
     "Screener Stock Research",
+    host=os.getenv("MCP_HOST", "0.0.0.0"),
+    port=int(os.getenv("PORT", os.getenv("MCP_PORT", "8000"))),
     instructions="""
 You are an expert Indian equity analyst with deep knowledge of Indian stock markets,
 Screener.in data, and long-term investing principles.
@@ -852,7 +855,11 @@ def stock_comparison_ui() -> str:
 # ─── Entry point ──────────────────────────────────────────────────────────────
 
 def main():
-    mcp.run(transport="stdio")
+    # MCP_TRANSPORT=streamable-http to run as a network server (for remote
+    # MCP clients like Zia Agents custom tools) instead of the default stdio
+    # mode used by claude mcp add / local desktop clients.
+    transport = os.getenv("MCP_TRANSPORT", "stdio")
+    mcp.run(transport=transport)
 
 
 if __name__ == "__main__":

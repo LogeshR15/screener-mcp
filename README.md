@@ -88,6 +88,36 @@ Then ask Claude: `"Search for Asian Paints"` — you should get results.
 
 ---
 
+## Running as a remote server (HTTP)
+
+By default this runs over stdio — a local process, used by `claude mcp add`, Claude
+Desktop, and similar clients. Some integrations (e.g. Zia Agents custom tools,
+or any client that asks for an HTTPS **Server URL**) instead need a network server.
+
+Run it with HTTP transport:
+
+```bash
+MCP_TRANSPORT=streamable-http PORT=8000 python run_server.py
+# Serves MCP over HTTP at http://<host>:8000/mcp
+```
+
+Env vars:
+- `MCP_TRANSPORT` — `stdio` (default) or `streamable-http`
+- `PORT` / `MCP_PORT` — port to listen on (default `8000`)
+- `MCP_HOST` — bind address (default `0.0.0.0`)
+
+To get a public HTTPS URL, deploy this to any host that can run a long-lived
+Python process and terminate TLS for you (Render, Railway, Fly.io, a VM behind
+a reverse proxy, etc.), then point the client at `https://your-host/mcp`.
+
+> Note: a bare `streamable-http` server has no authentication. If you deploy
+> it publicly, put it behind your platform's access controls (API gateway,
+> IP allowlist, auth proxy) rather than exposing it to the open internet
+> unauthenticated — especially if you set `SCREENER_USERNAME`/`PASSWORD`,
+> since anyone who can reach the URL would act as your Screener.in account.
+
+---
+
 ## Tools — 23 total
 
 ### Company Research
