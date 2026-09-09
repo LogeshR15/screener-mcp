@@ -2,6 +2,11 @@
 
 > Turn Claude into a personal Indian equity analyst powered by live [Screener.in](https://www.screener.in) data — now with AI document analysis, NSE announcements, and research notebooks.
 
+[![PyPI](https://img.shields.io/pypi/v/screener-mcp)](https://pypi.org/project/screener-mcp/)
+[![Python](https://img.shields.io/pypi/pyversions/screener-mcp)](https://pypi.org/project/screener-mcp/)
+[![CI](https://github.com/LogeshR15/screener-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/LogeshR15/screener-mcp/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+
 **300+ active users** · [Report an issue](https://github.com/LogeshR15/screener-mcp/issues) · [LinkedIn](https://linkedin.com/in/logesh-ramasamy/) · logeshl2003@gmail.com
 
 ---
@@ -91,8 +96,8 @@ Then ask Claude: `"Search for Asian Paints"` — you should get results.
 ## Running as a remote server (HTTP)
 
 By default this runs over stdio — a local process, used by `claude mcp add`, Claude
-Desktop, and similar clients. Some integrations (e.g. Zia Agents custom tools,
-or any client that asks for an HTTPS **Server URL**) instead need a network server.
+Desktop, and similar clients. Some integrations — any client that asks for an
+HTTPS **Server URL** — instead need a network server.
 
 Run it with HTTP transport:
 
@@ -102,9 +107,15 @@ MCP_TRANSPORT=streamable-http PORT=8000 python run_server.py
 ```
 
 Env vars:
-- `MCP_TRANSPORT` — `stdio` (default) or `streamable-http`
-- `PORT` / `MCP_PORT` — port to listen on (default `8000`)
-- `MCP_HOST` — bind address (default `0.0.0.0`)
+
+| Variable | Purpose | Default |
+|----------|---------|---------|
+| `SCREENER_USERNAME` | Screener.in login email (needed for screening tools) | — |
+| `SCREENER_PASSWORD` | Screener.in password | — |
+| `MCP_TRANSPORT` | `stdio` or `streamable-http` | `stdio` |
+| `PORT` / `MCP_PORT` | Port to listen on (HTTP transport only) | `8000` |
+| `MCP_HOST` | Bind address (HTTP transport only) | `0.0.0.0` |
+| `CHROMA_PERSIST_DIR` | Where the document-analysis vector store is cached | `~/.screener-mcp/chroma_db` |
 
 To get a public HTTPS URL, deploy this to any host that can run a long-lived
 Python process and terminate TLS for you (Render, Railway, Fly.io, a VM behind
@@ -251,8 +262,9 @@ Results are cached — the same report is never re-processed twice.
 ```
 screener-mcp/
 ├── run_server.py
+├── tests/                          # Offline registry + docs-consistency tests
 └── src/screener_mcp/
-    ├── server.py                   # FastMCP — all 21 tool definitions
+    ├── server.py                   # FastMCP — all 23 tool definitions
     ├── client.py                   # Screener.in HTTP client + auth
     ├── core/
     │   ├── nse_client.py           # NSE India API (announcements, filings)
@@ -295,6 +307,31 @@ screener-mcp/
 ## Contributing
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) — adding a new tool takes ~10 minutes.
+
+```bash
+git clone https://github.com/LogeshR15/screener-mcp
+cd screener-mcp
+python3 -m venv .venv && source .venv/bin/activate
+pip install -e ".[dev]"
+pytest
+```
+
+The test suite is offline — no network, no Screener.in credentials — and
+checks that the tool registry and the docs still agree with each other. If you
+add or rename a tool, tests fail until you update `EXPECTED_TOOLS` in
+[`tests/test_tools.py`](tests/test_tools.py), the `server.py` docstring, and
+the README tool table.
+
+**Dependency files:**
+- `pyproject.toml` — the source of truth; `[ai]` extra adds document analysis
+- `requirements.txt` — full install (core + document analysis, pulls in torch)
+- `requirements-core.txt` — lightweight install, no document-analysis tools
+
+---
+
+## License
+
+[MIT](LICENSE) © Logesh Ramasamy
 
 ---
 

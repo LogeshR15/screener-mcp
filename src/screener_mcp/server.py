@@ -1,20 +1,20 @@
 """
 Screener.in MCP Server — Indian Stock Research Assistant
 
-Tools exposed to Claude:
+Tools exposed to Claude (23 total):
   search_company              — find a company by name or symbol
   get_company_overview        — key ratios, about, price data
   get_financials              — P&L / Balance Sheet / Cash Flow / Ratios history
   get_quarterly_results       — last 8 quarters of results
-  get_shareholding            — promoter / FII / DII / public holding trend
-  get_peers                   — peer comparison table
+  get_shareholding_pattern    — promoter / FII / DII / public holding trend
+  get_peer_comparison         — peer comparison table
   compare_companies           — side-by-side comparison of 2-5 companies
   screen_stocks               — custom Screener.in query
   screen_by_theme             — pre-built thematic screens
-  list_themes                 — list available theme screens
+  list_investment_themes      — list available theme screens
   get_full_analysis           — ALL data for deep-dive reasoning
-  get_red_flags               — structured red flag checklist data
-  beginner_explainer          — data + prompt for beginner-friendly explanation
+  analyze_red_flags           — structured red flag checklist data
+  explain_for_beginners       — data + prompt for beginner-friendly explanation
   compare_stocks_ui           — interactive comparison dashboard (Claude Desktop)
   get_document_list           — list annual reports and earnings call transcripts
   analyze_annual_report       — ask questions over annual report PDFs (RAG)
@@ -29,6 +29,7 @@ Tools exposed to Claude:
 Resources:
   screener://analyst-guide    — how to use this assistant
   screener://query-syntax     — Screener query language reference
+  screener://stock-comparison — interactive stock comparison dashboard UI
 
 Setup:
   Set environment variables:
@@ -869,7 +870,7 @@ async def health_check(request):
 
 def main():
     # MCP_TRANSPORT=streamable-http to run as a network server (for remote
-    # MCP clients like Zia Agents custom tools) instead of the default stdio
+    # MCP clients that need an HTTP server URL) instead of the default stdio
     # mode used by claude mcp add / local desktop clients.
     transport = os.getenv("MCP_TRANSPORT", "stdio")
     mcp.run(transport=transport)

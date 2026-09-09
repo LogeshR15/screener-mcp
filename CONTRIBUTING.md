@@ -29,6 +29,17 @@ export SCREENER_USERNAME="your@email.com"
 export SCREENER_PASSWORD="yourpassword"
 ```
 
+Run the test suite:
+
+```bash
+pytest
+```
+
+These tests are offline — no network calls, no credentials needed. They check
+that the tool registry and the documentation still agree, so they fail if you
+add or rename a tool without updating the docs. See
+[Submitting a PR](#submitting-a-pr).
+
 Test the server runs:
 
 ```bash
@@ -50,8 +61,10 @@ claude mcp add screener-dev -s local -- \
 ```
 screener-mcp/
 ├── run_server.py                      # Entry point (calls server.main())
+├── tests/
+│   └── test_tools.py                  # Offline registry + docs-consistency tests
 └── src/screener_mcp/
-    ├── server.py                      # FastMCP — all 21 tool definitions (start here)
+    ├── server.py                      # FastMCP — all 23 tool definitions (start here)
     ├── client.py                      # Screener.in HTTP client + auth
     ├── core/
     │   ├── nse_client.py              # NSE India API client (announcements, filings)
@@ -230,8 +243,12 @@ Operators: `>` `<` `=` `AND`
 
 1. Fork the repo and create a branch: `git checkout -b feat/my-tool`
 2. Make your changes following the rules above
-3. Test interactively with Claude Code
-4. Open a PR — include:
+3. If you added or renamed a tool, update all three: `EXPECTED_TOOLS` in
+   `tests/test_tools.py`, the `server.py` module docstring, and the README
+   tool table (including the `## Tools — N total` count)
+4. Run `pytest` — it must pass; CI runs it on every PR
+5. Test interactively with Claude Code
+6. Open a PR — include:
    - What the tool does (one sentence)
    - An example query that triggers it
    - Any new dependencies and why they're needed

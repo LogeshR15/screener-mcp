@@ -4,18 +4,48 @@ on:
   release:
     types: [published]
 
+permissions:
+  contents: read
+
 jobs:
   publish:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+
+      # PyPI rejects a re-upload of an existing version, so a release tag that
+      # does not match pyproject.toml's version fails the publish step with an
+      # opaque 400. Fail here instead, with a message that says what to fix.
+      - name: Check release tag matches pyproject version
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          VERSION="$(python -c 'import tomllib,pathlib; print(tomllib.loads(pathlib.Path("pyproject.toml").read_text())["project"]["version"])')"
+          echo "release tag: $TAG / pyproject version: $VERSION"
+          if [ "$TAG" != "$VERSION" ]; then
+            echo "::error::Release tag '$TAG' does not match pyproject.toml version '$VERSION'. Bump the version in pyproject.toml and re-tag."
+            exit 1
+          fi
+
+      - name: Run tests
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+          python -m pytest -q
+
       - name: Build
         run: |
           pip install build
           python -m build
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
         with:

@@ -1,4 +1,8 @@
-# Core dependencies
+# Full install: core + document analysis. Installing this file pulls in
+# torch (via sentence-transformers), roughly 1-2GB.
+# For a lightweight install, use requirements-core.txt instead.
+#
+# Core
 mcp>=1.0.0,<2.0.0
 httpx>=0.27.0
 beautifulsoup4>=4.12.0
