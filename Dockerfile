@@ -23,8 +23,7 @@ RUN python -c "from sentence_transformers import SentenceTransformer; SentenceTr
 ENV MCP_TRANSPORT=streamable-http
 ENV HF_HOME=/app/.cache/huggingface
 
-# Catalyst AppSail sets X_ZOHO_CATALYST_LISTEN_PORT at runtime; the app reads
-# it directly (see server.py). EXPOSE here is documentation only.
+# EXPOSE here is documentation only; the app reads PORT/MCP_PORT at runtime.
 EXPOSE 9000
 
 CMD ["python", "run_server.py"]

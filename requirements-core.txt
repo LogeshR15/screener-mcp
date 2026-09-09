@@ -2,9 +2,7 @@
 # analyze_earnings_call, ask_company_research, search_market_commentary).
 #
 # Use this for a lightweight deploy where the full [ai] extras (pdfplumber,
-# chromadb, sentence-transformers — heavy, pulls in torch) aren't practical,
-# e.g. Catalyst AppSail's managed Python runtime, which vendors dependencies
-# locally and zip-uploads them rather than running pip install remotely.
+# chromadb, sentence-transformers — heavy, pulls in torch) aren't practical.
 mcp>=1.0.0,<2.0.0
 httpx>=0.27.0
 beautifulsoup4>=4.12.0
