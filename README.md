@@ -153,7 +153,7 @@ Then point the client at `http://<host>:8000/mcp`.
 
 ---
 
-## Tools — 23 total
+## Tools — 25 total
 
 ### Company Research
 
@@ -198,6 +198,8 @@ Then point the client at `http://<host>:8000/mcp`.
 |------|-------------|:---:|
 | `get_company_announcements` | NSE corporate announcements with category filter | No |
 | `search_shareholder` | Find investor activity via NSE bulk deals | No |
+| `get_bulk_deals` | All NSE bulk deals for one company — no investor name needed | No |
+| `get_promoter_pledge_history` | Dedicated promoter pledge % trend with severity flag | No |
 
 ### Market & Research *(new)*
 

@@ -47,6 +47,8 @@ EXPECTED_TOOLS = {
     # Corporate events
     "get_company_announcements",
     "search_shareholder",
+    "get_bulk_deals",
+    "get_promoter_pledge_history",
     # Market & research
     "get_commodity_prices",
     "notebook_ai",

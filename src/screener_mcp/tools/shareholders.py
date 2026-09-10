@@ -69,7 +69,7 @@ async def search_shareholder(
 
     lines = [
         f"# Bulk Deals — '{name}'",
-        f"Period: {from_date} to {to_date} | {len(matched)} deals found",
+        f"Period: {from_date} to {to_date} | {len(matched)} deals found"
         + (f" | Symbol: {symbol.upper()}" if symbol else ""),
         "",
         f"{'Date':<12} {'Company':<20} {'B/S':<5} {'Qty (shares)':<15} {'Price ₹':<10} Client",
@@ -93,5 +93,60 @@ async def search_shareholder(
     lines.append(
         "\n**Note:** NSE bulk deals (>0.5% of equity in a single trade) only. "
         "For full shareholding, use `get_shareholding_pattern(symbol)`."
+    )
+    return "\n".join(lines)
+
+
+async def get_bulk_deals(symbol: str, days: int = 90) -> str:
+    """
+    All NSE bulk deals for one company — no investor name required.
+
+    symbol: NSE trading symbol (e.g., "RELIANCE")
+    days: how many days of history to search (default 90)
+
+    Note: Only captures NSE bulk deals (single trade > 0.5% of equity).
+    """
+    if not symbol.strip():
+        return "**Error:** Please provide an NSE symbol."
+
+    nse = await get_nse_client()
+
+    to_date = datetime.now().strftime("%d-%m-%Y")
+    from_date = (datetime.now() - timedelta(days=days)).strftime("%d-%m-%Y")
+
+    deals = await nse.get_bulk_deals(from_date, to_date, symbol=symbol)
+
+    if not deals:
+        return (
+            f"**No bulk deals found for {symbol.upper()}** in the last {days} days.\n\n"
+            f"Date range: {from_date} to {to_date}\n\n"
+            "This is common — bulk deals (>0.5% of equity in a single trade) are relatively rare "
+            "events. For ongoing FII/DII/Promoter trends, use `get_shareholding_pattern(symbol)`."
+        )
+
+    lines = [
+        f"# Bulk Deals — {symbol.upper()}",
+        f"Period: {from_date} to {to_date} | {len(deals)} deals found",
+        "",
+        f"{'Date':<12} {'B/S':<5} {'Qty (shares)':<15} {'Price ₹':<10} Client",
+        "-" * 75,
+    ]
+
+    for d in deals[:50]:
+        date = str(d.get("tradDt", d.get("date", "")))[:10]
+        bs = str(d.get("buySell", d.get("buy_sell", "?")))[:4]
+        qty = str(d.get("quantityTraded", d.get("qty", "")))
+        price = str(d.get("tradePrice", d.get("price", "")))
+        client = str(
+            d.get("clientName") or d.get("client_name") or d.get("buyerSellName") or ""
+        )[:40]
+        lines.append(f"{date:<12} {bs:<5} {qty:<15} {price:<10} {client}")
+
+    if len(deals) > 50:
+        lines.append(f"\n... and {len(deals) - 50} more deals. Narrow with a smaller `days` value.")
+
+    lines.append(
+        "\n**Note:** NSE bulk deals (>0.5% of equity in a single trade) only. "
+        "For a specific investor across companies, use `search_shareholder(name)`."
     )
     return "\n".join(lines)

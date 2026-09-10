@@ -193,6 +193,70 @@ async def get_shareholding(symbol: str) -> str:
     return "\n".join(lines)
 
 
+async def get_promoter_pledge_history(symbol: str) -> str:
+    """Dedicated view of promoter pledge % trend, pulled out of the shareholding table."""
+    client = await get_client()
+    path = f"/company/{symbol.upper()}/"
+    html = await client.get_html(path)
+    data = parse_shareholding(html)
+
+    quarters = data.get("quarters", [])
+    rows = data.get("rows", [])
+    if not quarters or not rows:
+        return f"No shareholding data found for {symbol.upper()}."
+
+    pledge_row = next(
+        (r for r in rows if "pledge" in r.get("category", "").lower()), None
+    )
+
+    if not pledge_row:
+        return (
+            f"## {symbol.upper()} — Promoter Pledge\n\n"
+            "No dedicated pledge row found in Screener.in's shareholding table for this company.\n\n"
+            "This usually means **promoter shares are not pledged** — Screener only shows the "
+            "line when pledging exists. To be certain, cross-check the 'Pledged percentage' "
+            "field via `screen_stocks(\"Pledged percentage > 0\")` filtered to this symbol, or "
+            "the company's own shareholding pattern (SAST) filings."
+        )
+
+    vals = pledge_row.get("values", [])[-len(quarters):]
+    vals_padded = vals + [""] * (len(quarters) - len(vals))
+
+    lines = [
+        f"## {symbol.upper()} — Promoter Pledge History (%)",
+        "",
+        f"{'Quarter':<12} " + "  ".join(f"{q:>10}" for q in quarters),
+        f"{'Pledged %':<12} " + "  ".join(f"{v:>10}" for v in vals_padded),
+    ]
+
+    def _pct(v: str) -> float | None:
+        try:
+            return float(str(v).replace("%", "").strip())
+        except (ValueError, TypeError):
+            return None
+
+    numeric = [(_pct(v)) for v in vals if _pct(v) is not None]
+    if numeric:
+        latest = numeric[-1]
+        severity = (
+            "**High severity** — over 50% of promoter holding is pledged, a significant risk."
+            if latest > 50
+            else "**Moderate concern** — meaningful pledge exists; watch for further increases."
+            if latest > 20
+            else "**Low concern** — pledge level is modest."
+            if latest > 0
+            else "No pledge currently."
+        )
+        trend = (
+            "rising" if len(numeric) >= 2 and numeric[-1] > numeric[0] + 0.5
+            else "falling" if len(numeric) >= 2 and numeric[-1] < numeric[0] - 0.5
+            else "stable"
+        )
+        lines += ["", f"**Latest pledge**: {latest:.1f}% — {severity}", f"**Trend**: {trend}"]
+
+    return "\n".join(lines)
+
+
 async def get_peers(symbol: str, financial_type: FinancialType = "consolidated") -> str:
     client = await get_client()
     path = f"/company/{symbol.upper()}/"

@@ -1,7 +1,7 @@
 """
 Screener.in MCP Server — Indian Stock Research Assistant
 
-Tools exposed to Claude (23 total):
+Tools exposed to Claude (25 total):
   search_company              — find a company by name or symbol
   get_company_overview        — key ratios, about, price data
   get_financials              — P&L / Balance Sheet / Cash Flow / Ratios history
@@ -23,6 +23,8 @@ Tools exposed to Claude (23 total):
   search_market_commentary    — semantic search for a question across multiple companies' indexed documents
   get_company_announcements   — fetch recent NSE corporate announcements
   search_shareholder          — find bulk deal activity by investor name
+  get_bulk_deals              — all bulk deals for one company (no investor name needed)
+  get_promoter_pledge_history — dedicated promoter pledge % trend with severity flag
   get_commodity_prices        — commodity price context and company impact analysis
   notebook_ai                 — save and summarize investment research notes
 
@@ -59,6 +61,7 @@ from .tools.company_tools import (
     get_shareholding as _get_shareholding,
     get_peers as _get_peers,
     compare_companies as _compare,
+    get_promoter_pledge_history as _get_pledge_history,
 )
 from .tools.screening_tools import (
     screen_stocks as _screen,
@@ -78,7 +81,10 @@ from .tools.documents import (
     search_market_commentary as _search_market_commentary,
 )
 from .tools.announcements import get_company_announcements as _get_announcements
-from .tools.shareholders import search_shareholder as _search_shareholder
+from .tools.shareholders import (
+    search_shareholder as _search_shareholder,
+    get_bulk_deals as _get_bulk_deals,
+)
 from .tools.commodities import get_commodity_prices as _get_commodity_prices
 from .tools.notebook import notebook_ai as _notebook_ai
 
@@ -670,6 +676,43 @@ async def search_shareholder(
       search_shareholder("Nalanda Capital", days=730)
     """
     return await _safe(_search_shareholder)(name, symbol or None, days)
+
+
+@mcp.tool()
+async def get_bulk_deals(symbol: str, days: int = 90) -> str:
+    """
+    Fetch all NSE bulk deals for one company — no investor name required.
+
+    Unlike search_shareholder (which needs a name to filter by), this returns
+    every bulk deal (>0.5% of equity in a single trade) recorded for the symbol,
+    useful for "who's been trading large blocks of X" style questions.
+
+    symbol: NSE trading symbol (e.g., "RELIANCE")
+    days: how many days of history to search (default 90, max 365)
+
+    Examples:
+      get_bulk_deals("YESBANK")
+      get_bulk_deals("ADANIENT", days=180)
+    """
+    return await _safe(_get_bulk_deals)(symbol, days)
+
+
+@mcp.tool()
+async def get_promoter_pledge_history(symbol: str) -> str:
+    """
+    Dedicated promoter pledge % trend for a company, with severity assessment.
+
+    Pulls the pledge row out of the shareholding table (if one exists) and
+    flags severity: >50% pledged = high risk, 20-50% = moderate, <20% = low,
+    none = clean.
+
+    symbol: NSE/BSE symbol
+
+    Examples:
+      get_promoter_pledge_history("ZEEL")
+      get_promoter_pledge_history("RELIANCE")
+    """
+    return await _safe(_get_pledge_history)(symbol)
 
 
 # ─── Commodity Analysis ────────────────────────────────────────────────────────
