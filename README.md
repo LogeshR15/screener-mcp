@@ -33,10 +33,15 @@
 ## Quick install
 
 ```bash
-claude mcp add screener -s user -- uvx screener-mcp
+claude mcp add screener -s user -- uvx --from 'screener-mcp[ai]' screener-mcp
 ```
 
 > Requires [uv](https://github.com/astral-sh/uv): `pip install uv` or `brew install uv`
+>
+> The `[ai]` extra pulls in `pdfplumber`, `chromadb`, and `sentence-transformers` (~1-2GB, via torch) and is
+> required for `analyze_annual_report`, `analyze_earnings_call`, `ask_company_research`, and
+> `search_market_commentary`. Plain `uvx screener-mcp` installs only the lightweight core — those four tools
+> will fail with a "not installed" error until you add the extra.
 
 **Manual install:**
 
