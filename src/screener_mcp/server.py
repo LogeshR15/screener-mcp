@@ -143,7 +143,7 @@ are broad, and you cannot predict stock prices.
 
 # ─── Search & Discovery ────────────────────────────────────────────────────────
 
-@mcp.tool()
+@mcp.tool(annotations={"title": "Search Company", "readOnlyHint": True, "openWorldHint": True})
 async def search_company(query: str) -> str:
     """
     Search for an Indian stock/company by name or NSE/BSE symbol.
@@ -157,7 +157,7 @@ async def search_company(query: str) -> str:
     return await _safe(_search_company)(query)
 
 
-@mcp.tool()
+@mcp.tool(annotations={"title": "Screen Stocks", "readOnlyHint": True, "openWorldHint": True})
 async def screen_stocks(query: str, limit: int = 25) -> str:
     """
     Run a custom stock screen using Screener.in query syntax.
@@ -181,7 +181,7 @@ async def screen_stocks(query: str, limit: int = 25) -> str:
     return await _safe(_screen)(query, limit=limit)
 
 
-@mcp.tool()
+@mcp.tool(annotations={"title": "Screen By Theme", "readOnlyHint": True, "openWorldHint": True})
 async def screen_by_theme(theme: str, limit: int = 20) -> str:
     """
     Run a pre-built thematic stock screen.
@@ -211,7 +211,7 @@ async def screen_by_theme(theme: str, limit: int = 20) -> str:
     return await _safe(_theme)(theme, limit=limit)
 
 
-@mcp.tool()
+@mcp.tool(annotations={"title": "List Investment Themes", "readOnlyHint": True, "openWorldHint": False})
 async def list_investment_themes() -> str:
     """
     List all available pre-built investment themes with their screening criteria.
@@ -222,7 +222,7 @@ async def list_investment_themes() -> str:
 
 # ─── Company Deep Dive ─────────────────────────────────────────────────────────
 
-@mcp.tool()
+@mcp.tool(annotations={"title": "Get Company Overview", "readOnlyHint": True, "openWorldHint": True})
 async def get_company_overview(symbol: str, financial_type: str = "consolidated") -> str:
     """
     Get a company's key ratios, current price, 52-week range, and about section.
@@ -235,7 +235,7 @@ async def get_company_overview(symbol: str, financial_type: str = "consolidated"
     return await _safe(_get_overview)(symbol, financial_type)
 
 
-@mcp.tool()
+@mcp.tool(annotations={"title": "Get Financials", "readOnlyHint": True, "openWorldHint": True})
 async def get_financials(
     symbol: str,
     statement: str = "profit_loss",
@@ -260,7 +260,7 @@ async def get_financials(
     return await _safe(_get_financials)(symbol, statement, financial_type, years)
 
 
-@mcp.tool()
+@mcp.tool(annotations={"title": "Get Quarterly Results", "readOnlyHint": True, "openWorldHint": True})
 async def get_quarterly_results(symbol: str, financial_type: str = "consolidated") -> str:
     """
     Get the last 8 quarters of results for a company.
@@ -273,7 +273,7 @@ async def get_quarterly_results(symbol: str, financial_type: str = "consolidated
     return await _safe(_get_quarterly)(symbol, financial_type)
 
 
-@mcp.tool()
+@mcp.tool(annotations={"title": "Get Shareholding Pattern", "readOnlyHint": True, "openWorldHint": True})
 async def get_shareholding_pattern(symbol: str) -> str:
     """
     Get shareholding pattern history for a company (last 8 quarters).
@@ -291,7 +291,7 @@ async def get_shareholding_pattern(symbol: str) -> str:
     return await _safe(_get_shareholding)(symbol)
 
 
-@mcp.tool()
+@mcp.tool(annotations={"title": "Get Peer Comparison", "readOnlyHint": True, "openWorldHint": True})
 async def get_peer_comparison(symbol: str, financial_type: str = "consolidated") -> str:
     """
     Get peer comparison table as shown on Screener.in for a company.
@@ -304,7 +304,7 @@ async def get_peer_comparison(symbol: str, financial_type: str = "consolidated")
     return await _safe(_get_peers)(symbol, financial_type)
 
 
-@mcp.tool()
+@mcp.tool(annotations={"title": "Compare Companies", "readOnlyHint": True, "openWorldHint": True})
 async def compare_companies(symbols: list[str], financial_type: str = "consolidated") -> str:
     """
     Side-by-side comparison of 2 to 5 companies on all key ratios.
@@ -325,7 +325,7 @@ async def compare_companies(symbols: list[str], financial_type: str = "consolida
 
 # ─── Analysis Tools ────────────────────────────────────────────────────────────
 
-@mcp.tool()
+@mcp.tool(annotations={"title": "Get Full Analysis", "readOnlyHint": True, "openWorldHint": True})
 async def get_full_analysis(symbol: str, financial_type: str = "consolidated") -> str:
     """
     Fetch ALL financial data for a company in a single call.
@@ -346,7 +346,7 @@ async def get_full_analysis(symbol: str, financial_type: str = "consolidated") -
     return await _safe(_full_analysis)(symbol, financial_type)
 
 
-@mcp.tool()
+@mcp.tool(annotations={"title": "Analyze Red Flags", "readOnlyHint": True, "openWorldHint": True})
 async def analyze_red_flags(symbol: str, financial_type: str = "consolidated") -> str:
     """
     Fetch all financial data for a company and generate a structured red flag analysis.
@@ -366,7 +366,7 @@ async def analyze_red_flags(symbol: str, financial_type: str = "consolidated") -
     return await _safe(_red_flags)(symbol, financial_type)
 
 
-@mcp.tool()
+@mcp.tool(annotations={"title": "Explain For Beginners", "readOnlyHint": True, "openWorldHint": True})
 async def explain_for_beginners(symbol: str) -> str:
     """
     Explain a company in simple, beginner-friendly language.
@@ -436,7 +436,7 @@ def _compute_red_flags(ratios: dict[str, str]) -> list[dict[str, str]]:
     return flags
 
 
-@mcp.tool()
+@mcp.tool(annotations={"title": "Compare Stocks (Interactive UI)", "readOnlyHint": True, "openWorldHint": True})
 async def compare_stocks_ui(symbols: list[str] | str) -> dict:
     """
     Interactive stock comparison dashboard.
@@ -500,7 +500,7 @@ async def compare_stocks_ui(symbols: list[str] | str) -> dict:
 
 # ─── Document Analysis ────────────────────────────────────────────────────────
 
-@mcp.tool()
+@mcp.tool(annotations={"title": "Get Document List", "readOnlyHint": True, "openWorldHint": True})
 async def get_document_list(symbol: str) -> str:
     """
     List all available annual reports and earnings call transcripts for a company.
@@ -515,7 +515,7 @@ async def get_document_list(symbol: str) -> str:
     return await _safe(_get_document_list)(symbol)
 
 
-@mcp.tool()
+@mcp.tool(annotations={"title": "Analyze Annual Report", "readOnlyHint": True, "openWorldHint": True})
 async def analyze_annual_report(
     symbol: str,
     year: int,
@@ -544,7 +544,7 @@ async def analyze_annual_report(
     return await _safe(_analyze_annual_report)(symbol, year, question, pdf_url or None)
 
 
-@mcp.tool()
+@mcp.tool(annotations={"title": "Analyze Earnings Call", "readOnlyHint": True, "openWorldHint": True})
 async def analyze_earnings_call(
     symbol: str,
     quarter: str,
@@ -571,7 +571,7 @@ async def analyze_earnings_call(
     return await _safe(_analyze_earnings_call)(symbol, quarter, question, pdf_url or None)
 
 
-@mcp.tool()
+@mcp.tool(annotations={"title": "Ask Company Research", "readOnlyHint": True, "openWorldHint": True})
 async def ask_company_research(
     symbol: str,
     question: str,
@@ -602,7 +602,7 @@ async def ask_company_research(
     )
 
 
-@mcp.tool()
+@mcp.tool(annotations={"title": "Search Market Commentary", "readOnlyHint": True, "openWorldHint": True})
 async def search_market_commentary(
     question: str,
     symbols: list[str],
@@ -630,7 +630,7 @@ async def search_market_commentary(
 
 # ─── Corporate Actions & Events ────────────────────────────────────────────────
 
-@mcp.tool()
+@mcp.tool(annotations={"title": "Get Company Announcements", "readOnlyHint": True, "openWorldHint": True})
 async def get_company_announcements(
     symbol: str,
     category: str = "all",
@@ -652,7 +652,7 @@ async def get_company_announcements(
     return await _safe(_get_announcements)(symbol, category, days)
 
 
-@mcp.tool()
+@mcp.tool(annotations={"title": "Search Shareholder", "readOnlyHint": True, "openWorldHint": True})
 async def search_shareholder(
     name: str,
     symbol: str = "",
@@ -678,7 +678,7 @@ async def search_shareholder(
     return await _safe(_search_shareholder)(name, symbol or None, days)
 
 
-@mcp.tool()
+@mcp.tool(annotations={"title": "Get Bulk Deals", "readOnlyHint": True, "openWorldHint": True})
 async def get_bulk_deals(symbol: str, days: int = 90) -> str:
     """
     Fetch all NSE bulk deals for one company — no investor name required.
@@ -697,7 +697,7 @@ async def get_bulk_deals(symbol: str, days: int = 90) -> str:
     return await _safe(_get_bulk_deals)(symbol, days)
 
 
-@mcp.tool()
+@mcp.tool(annotations={"title": "Get Promoter Pledge History", "readOnlyHint": True, "openWorldHint": True})
 async def get_promoter_pledge_history(symbol: str) -> str:
     """
     Dedicated promoter pledge % trend for a company, with severity assessment.
@@ -717,7 +717,7 @@ async def get_promoter_pledge_history(symbol: str) -> str:
 
 # ─── Commodity Analysis ────────────────────────────────────────────────────────
 
-@mcp.tool()
+@mcp.tool(annotations={"title": "Get Commodity Prices", "readOnlyHint": True, "openWorldHint": True})
 async def get_commodity_prices(commodity: str, years: int = 5) -> str:
     """
     Get commodity price context and its impact on Indian listed companies.
@@ -739,7 +739,7 @@ async def get_commodity_prices(commodity: str, years: int = 5) -> str:
 
 # ─── Research Notebook ────────────────────────────────────────────────────────
 
-@mcp.tool()
+@mcp.tool(annotations={"title": "Notebook AI (Research Notes)", "readOnlyHint": False, "destructiveHint": True, "idempotentHint": False, "openWorldHint": False})
 async def notebook_ai(
     action: str,
     symbol: str = "",
