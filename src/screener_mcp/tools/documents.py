@@ -18,6 +18,20 @@ from ..core.vector_store import get_vector_store
 logger = logging.getLogger(__name__)
 
 
+_ANNUAL_REPORT_RE = re.compile(r"annual\s*report", re.I)
+_ANNUAL_REPORT_EXCLUDE_RE = re.compile(
+    r"general\s*meeting|\bagm\b|newspaper|notice|brsr|business\s*responsibility",
+    re.I,
+)
+
+
+def _looks_like_annual_report(href: str, text: str) -> bool:
+    combined = f"{text} {href}"
+    if _ANNUAL_REPORT_EXCLUDE_RE.search(combined):
+        return False
+    return bool(_ANNUAL_REPORT_RE.search(combined))
+
+
 def _parse_annual_reports(html: str) -> list[dict]:
     """Extract annual report PDF links from the Screener.in company page."""
     soup = BeautifulSoup(html, "lxml")
@@ -30,7 +44,7 @@ def _parse_annual_reports(html: str) -> list[dict]:
         for a in section.find_all("a", href=True):
             href = a["href"]
             text = re.sub(r"\s+", " ", a.get_text()).strip()
-            if not (href.endswith(".pdf") or "annual" in href.lower() or "annual" in text.lower()):
+            if not _looks_like_annual_report(href, text):
                 continue
             year = re.search(r"20\d{2}", text + " " + href)
             url = href if href.startswith("http") else f"https://www.screener.in{href}"
@@ -44,9 +58,11 @@ def _parse_annual_reports(html: str) -> list[dict]:
         break
 
     if not reports:
-        for a in soup.find_all("a", href=re.compile(r"annual.?report|AnnualReport", re.I)):
+        for a in soup.find_all("a", href=True):
             href = a["href"]
             text = re.sub(r"\s+", " ", a.get_text()).strip()
+            if not _looks_like_annual_report(href, text):
+                continue
             year = re.search(r"20\d{2}", text + " " + href)
             url = href if href.startswith("http") else f"https://www.screener.in{href}"
             reports.append({
