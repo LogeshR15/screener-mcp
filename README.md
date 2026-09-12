@@ -153,7 +153,7 @@ Then point the client at `http://<host>:8000/mcp`.
 
 ---
 
-## Tools — 25 total
+## Tools — 30 total
 
 ### Company Research
 
@@ -200,6 +200,7 @@ Then point the client at `http://<host>:8000/mcp`.
 | `search_shareholder` | Find investor activity via NSE bulk deals | No |
 | `get_bulk_deals` | All NSE bulk deals for one company — no investor name needed | No |
 | `get_promoter_pledge_history` | Dedicated promoter pledge % trend with severity flag | No |
+| `get_credit_ratings` | CRISIL/ICRA/CARE/India Ratings rating actions — a debt-quality check | No |
 
 ### Market & Research *(new)*
 
@@ -207,6 +208,17 @@ Then point the client at `http://<host>:8000/mcp`.
 |------|-------------|:---:|
 | `get_commodity_prices` | Commodity price context + impacted companies | No |
 | `notebook_ai` | Save, read, and AI-summarize research notes locally | No |
+
+### Portfolio *(new)*
+
+| Tool | What it does | Login needed |
+|------|-------------|:---:|
+| `add_portfolio_stock` | Add/merge a holding into your local portfolio (quantity-weighted avg cost) | No |
+| `update_portfolio_stock` | Overwrite quantity/avg price on an existing holding (partial sell, cost correction) | No |
+| `remove_portfolio_stock` | Remove a holding entirely | No |
+| `get_portfolio` | View holdings with live price, P&L (₹ and %), and weight | No |
+
+> Stored locally at `~/.screener-mcp/portfolio.json` — no account, no external service, nothing leaves your machine.
 
 ---
 

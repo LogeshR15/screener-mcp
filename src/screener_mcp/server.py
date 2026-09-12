@@ -25,8 +25,13 @@ Tools exposed to Claude (25 total):
   search_shareholder          — find bulk deal activity by investor name
   get_bulk_deals              — all bulk deals for one company (no investor name needed)
   get_promoter_pledge_history — dedicated promoter pledge % trend with severity flag
+  get_credit_ratings          — CRISIL/ICRA/CARE rating actions, a debt-quality check
   get_commodity_prices        — commodity price context and company impact analysis
   notebook_ai                 — save and summarize investment research notes
+  add_portfolio_stock         — add/merge a holding into your local portfolio
+  update_portfolio_stock      — correct quantity/avg price on an existing holding
+  remove_portfolio_stock      — remove a holding entirely
+  get_portfolio                — view holdings with live P&L and weights
 
 Resources:
   screener://analyst-guide    — how to use this assistant
@@ -80,13 +85,22 @@ from .tools.documents import (
     ask_company_research as _ask_company_research,
     search_market_commentary as _search_market_commentary,
 )
-from .tools.announcements import get_company_announcements as _get_announcements
+from .tools.announcements import (
+    get_company_announcements as _get_announcements,
+    get_credit_ratings as _get_credit_ratings,
+)
 from .tools.shareholders import (
     search_shareholder as _search_shareholder,
     get_bulk_deals as _get_bulk_deals,
 )
 from .tools.commodities import get_commodity_prices as _get_commodity_prices
 from .tools.notebook import notebook_ai as _notebook_ai
+from .tools.portfolio import (
+    add_portfolio_stock as _add_portfolio_stock,
+    update_portfolio_stock as _update_portfolio_stock,
+    remove_portfolio_stock as _remove_portfolio_stock,
+    get_portfolio as _get_portfolio,
+)
 
 def _safe(result):
     """Wrap a coroutine so network/auth errors become readable messages."""
@@ -715,6 +729,24 @@ async def get_promoter_pledge_history(symbol: str) -> str:
     return await _safe(_get_pledge_history)(symbol)
 
 
+@mcp.tool(annotations={"title": "Get Credit Ratings", "readOnlyHint": True, "openWorldHint": True})
+async def get_credit_ratings(symbol: str, days: int = 730) -> str:
+    """
+    Credit rating actions (CRISIL/ICRA/CARE/India Ratings) for a company —
+    a governance/debt-quality check for long-term holders, alongside
+    `get_promoter_pledge_history`.
+
+    symbol: NSE trading symbol (e.g., "TCS", "RELIANCE")
+    days: look back this many days (default 730 — rating actions are
+          infrequent, often just 1-2 per year)
+
+    Examples:
+      get_credit_ratings("RELIANCE")
+      get_credit_ratings("ADANIENT", days=365)
+    """
+    return await _safe(_get_credit_ratings)(symbol, days)
+
+
 # ─── Commodity Analysis ────────────────────────────────────────────────────────
 
 @mcp.tool(annotations={"title": "Get Commodity Prices", "readOnlyHint": True, "openWorldHint": True})
@@ -767,6 +799,84 @@ async def notebook_ai(
       notebook_ai("read", note_id="a1b2c3d4")
     """
     return await _safe(_notebook_ai)(action, symbol or None, content or None, note_id or None)
+
+
+# ─── Portfolio ──────────────────────────────────────────────────────────────────
+
+@mcp.tool(annotations={"title": "Add Portfolio Stock", "readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": False})
+async def add_portfolio_stock(symbol: str, quantity: float, avg_price: float) -> str:
+    """
+    Add a holding to your local portfolio (~/.screener-mcp/portfolio.json).
+
+    If you already hold this symbol, the new lot merges into the existing
+    position with a quantity-weighted average price — like a real broker
+    ledger, buying more at a different price updates your average cost
+    rather than overwriting it.
+
+    symbol: NSE/BSE symbol (e.g., "RELIANCE")
+    quantity: number of shares in this lot
+    avg_price: price per share for this lot
+
+    Examples:
+      add_portfolio_stock("RELIANCE", quantity=10, avg_price=1350)
+      add_portfolio_stock("TCS", quantity=5, avg_price=3800)
+    """
+    return await _safe(_add_portfolio_stock)(symbol, quantity, avg_price)
+
+
+@mcp.tool(annotations={"title": "Update Portfolio Stock", "readOnlyHint": False, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False})
+async def update_portfolio_stock(
+    symbol: str,
+    quantity: float = 0.0,
+    avg_price: float = 0.0,
+) -> str:
+    """
+    Overwrite quantity and/or average price for an existing holding — e.g.
+    after a partial sell (set the new remaining quantity) or to correct
+    your recorded cost basis.
+
+    Use `add_portfolio_stock` instead for a new buy lot — it recalculates
+    the average price for you rather than replacing it.
+
+    symbol: NSE/BSE symbol already in your portfolio
+    quantity: new total share count (0 = leave unchanged)
+    avg_price: new average price (0 = leave unchanged)
+
+    Examples:
+      update_portfolio_stock("RELIANCE", quantity=5)   # sold half
+      update_portfolio_stock("TCS", avg_price=3750)     # correct cost basis
+    """
+    return await _safe(_update_portfolio_stock)(
+        symbol,
+        quantity if quantity else None,
+        avg_price if avg_price else None,
+    )
+
+
+@mcp.tool(annotations={"title": "Remove Portfolio Stock", "readOnlyHint": False, "destructiveHint": True, "idempotentHint": True, "openWorldHint": False})
+async def remove_portfolio_stock(symbol: str) -> str:
+    """
+    Remove a holding entirely from the portfolio (full exit).
+
+    Examples:
+      remove_portfolio_stock("YESBANK")
+    """
+    return await _safe(_remove_portfolio_stock)(symbol)
+
+
+@mcp.tool(annotations={"title": "Get Portfolio", "readOnlyHint": True, "openWorldHint": True})
+async def get_portfolio() -> str:
+    """
+    View your portfolio with live prices, P&L, and per-holding weight.
+
+    Fetches the current price for each holding from Screener.in and computes
+    invested value, current value, gain/loss (₹ and %), and each position's
+    weight in the total portfolio.
+
+    Examples:
+      get_portfolio()
+    """
+    return await _safe(_get_portfolio)()
 
 
 # ─── Resources ────────────────────────────────────────────────────────────────

@@ -18,6 +18,7 @@ _CATEGORY_KEYWORDS: dict[str, list[str]] = {
     "acquisition": ["acquisition", "merger", "demerger", "amalgamation", "takeover"],
     "buyback": ["buyback", "buy-back", "share repurchase"],
     "fund_raise": ["rights issue", "ipo", "fpo", "ncd", "debenture", "preferential allotment"],
+    "credit_rating": ["credit rating", "rating action", "crisil", "icra", "care ratings", "india ratings", "rating agency"],
 }
 
 
@@ -31,7 +32,7 @@ def _categorize(headline: str, subject: str) -> str:
 
 def _within_days(date_str: str, days: int) -> bool:
     """Return True if date_str falls within the last N days."""
-    for fmt in ["%d-%b-%Y", "%Y-%m-%d", "%d/%m/%Y", "%b %d, %Y", "%d %b %Y"]:
+    for fmt in ["%d-%b-%Y %H:%M:%S", "%d-%b-%Y", "%Y-%m-%d", "%d/%m/%Y", "%b %d, %Y", "%d %b %Y"]:
         try:
             dt = datetime.strptime(date_str.strip(), fmt)
             return (datetime.now() - dt).days <= days
@@ -110,3 +111,24 @@ async def get_company_announcements(
         lines.append(f"... and {len(filtered) - 50} more. Narrow with `category` or reduce `days`.")
 
     return "\n".join(lines)
+
+
+async def get_credit_ratings(symbol: str, days: int = 730) -> str:
+    """
+    Credit rating actions (CRISIL/ICRA/CARE/India Ratings) for a company —
+    a governance/debt-quality check for long-term holders.
+
+    symbol: NSE trading symbol (e.g., "TCS", "RELIANCE")
+    days: look back this many days (default 730 — rating actions are infrequent,
+          often just 1-2 per year, so a short window usually finds nothing)
+    """
+    result = await get_company_announcements(symbol, category="credit_rating", days=days)
+    if "No credit_rating announcements found" in result:
+        return (
+            f"**No credit rating actions found for {symbol.upper()} in the last {days} days.**\n\n"
+            f"This can mean the company has no rated debt (common for well-capitalized, "
+            f"low-debt businesses), or the rating agency filing didn't use standard wording. "
+            f"Check `get_company_announcements('{symbol}', category='all', days={days})` "
+            f"for anything mentioning CRISIL/ICRA/CARE manually."
+        )
+    return result.replace("# Company Announcements", "# Credit Rating Actions")

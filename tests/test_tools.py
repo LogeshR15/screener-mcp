@@ -49,9 +49,15 @@ EXPECTED_TOOLS = {
     "search_shareholder",
     "get_bulk_deals",
     "get_promoter_pledge_history",
+    "get_credit_ratings",
     # Market & research
     "get_commodity_prices",
     "notebook_ai",
+    # Portfolio
+    "add_portfolio_stock",
+    "update_portfolio_stock",
+    "remove_portfolio_stock",
+    "get_portfolio",
 }
 
 
