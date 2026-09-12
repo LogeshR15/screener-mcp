@@ -62,7 +62,7 @@ class NSEClient:
         try:
             data = await self.get_json(
                 "/api/annual-reports",
-                params={"symbol": symbol.upper(), "industry": "", "submissionType": "annual-report"},
+                params={"index": "equities", "symbol": symbol.upper()},
             )
             reports = data.get("data", []) if isinstance(data, dict) else (data or [])
             result = []
@@ -70,13 +70,13 @@ class NSEClient:
                 url = r.get("fileName") or r.get("pdfLink") or ""
                 if not url:
                     continue
-                to_date = r.get("toDate", "")
-                year = to_date[:4] if to_date else r.get("fromDate", "")[:4]
+                to_yr = r.get("toYr", "")
+                year = to_yr or r.get("fromYr", "")
                 result.append({
                     "year": year,
-                    "from_date": r.get("fromDate", ""),
-                    "to_date": to_date,
-                    "title": r.get("subject", "Annual Report"),
+                    "from_date": r.get("fromYr", ""),
+                    "to_date": to_yr,
+                    "title": r.get("companyName", "Annual Report"),
                     "url": url,
                     "type": "annual_report",
                     "exchange": "NSE",
@@ -90,16 +90,16 @@ class NSEClient:
         """Fetch recent company announcements from NSE."""
         try:
             data = await self.get_json(
-                "/api/corp-info",
-                params={"symbol": symbol.upper(), "corpType": "announcement", "market": "Main+Market"},
+                "/api/corporate-announcements",
+                params={"index": "equities", "symbol": symbol.upper()},
             )
             items = data.get("data", []) if isinstance(data, dict) else (data or [])
             return [
                 {
                     "date": item.get("an_dt", ""),
-                    "category": item.get("subject", ""),
-                    "headline": item.get("desc", ""),
-                    "url": item.get("attachmentFile", ""),
+                    "category": item.get("desc", ""),
+                    "headline": item.get("attchmntText", ""),
+                    "url": item.get("attchmntFile", ""),
                     "exchange": "NSE",
                 }
                 for item in items
