@@ -63,6 +63,76 @@ claude mcp add screener -s user -- \
 
 ---
 
+## Claude Desktop setup
+
+Claude Desktop doesn't read `claude mcp add` — you edit its config file directly.
+
+**1.** Install [uv](https://github.com/astral-sh/uv) if you don't have it:
+
+```bash
+brew install uv   # or: pip install uv
+```
+
+**2.** Open the config file:
+
+- **macOS:** `~/Library/Application Support/Claude/claude_desktop_config.json`
+- **Windows:** `%APPDATA%\Claude\claude_desktop_config.json`
+- **Linux:** `~/.config/Claude/claude_desktop_config.json`
+
+In the app you can also get there via **Settings → Developer → Edit Config**.
+
+**3.** Add the `screener` server (create the file with just this content if it doesn't exist):
+
+```json
+{
+  "mcpServers": {
+    "screener": {
+      "command": "uvx",
+      "args": ["--from", "screener-mcp[ai]", "screener-mcp"],
+      "env": {
+        "SCREENER_USERNAME": "your@email.com",
+        "SCREENER_PASSWORD": "yourpassword"
+      }
+    }
+  }
+}
+```
+
+The `env` block is how Claude Desktop passes credentials — it does **not** inherit
+your shell's `~/.zshrc` exports. Leave `env` out entirely if you only want the
+no-login company-research tools.
+
+> `spawn uvx ENOENT` on launch? Claude Desktop starts with a minimal `PATH` and
+> can't find `uvx`. Use the absolute path instead — run `which uvx` (e.g.
+> `/opt/homebrew/bin/uvx`) and put that in `"command"`.
+
+**Already cloned the repo?** Point it at your venv interpreter instead:
+
+```json
+{
+  "mcpServers": {
+    "screener": {
+      "command": "/absolute/path/to/screener-mcp/.venv/bin/python3.11",
+      "args": ["/absolute/path/to/screener-mcp/run_server.py"]
+    }
+  }
+}
+```
+
+**4.** Quit Claude Desktop completely (**Cmd+Q** on macOS — closing the window
+isn't enough) and reopen it.
+
+**5.** Check the tools icon in the message composer — `screener` should be listed
+with its 25 tools. Then ask: `"Search for Asian Paints"`.
+
+> Server not showing up? Open **Settings → Developer** to see its status, and
+> check the logs at `~/Library/Application Support/Claude/logs/mcp-server-screener.log`
+> (macOS) or `%APPDATA%\Claude\logs\` (Windows). Invalid JSON in the config —
+> a stray trailing comma is the usual culprit — makes Claude Desktop skip every
+> server silently.
+
+---
+
 ## Credentials setup
 
 Company financials work **without login**. Stock screening requires a free account.
@@ -77,6 +147,9 @@ export SCREENER_PASSWORD="yourpassword"
 ```
 
 **3.** Reload shell (`source ~/.zshrc`) and restart Claude Code.
+
+> Claude Desktop does not read your shell profile — put the same two values in the
+> `"env"` block of `claude_desktop_config.json` instead (see [Claude Desktop setup](#claude-desktop-setup)).
 
 **For document analysis** (annual reports, earnings calls), install extra deps:
 
