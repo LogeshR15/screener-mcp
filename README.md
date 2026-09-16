@@ -77,7 +77,7 @@ If these return real data, the server is working end to end.
 - **Market & research** — commodity price context, local research notes
 - **Portfolio** — a private, local holdings tracker with live P&L
 
-30 tools in total — full reference [below](#tools).
+30 tools in total — full reference [below](#tools--30-total).
 
 ---
 
@@ -256,9 +256,9 @@ Never commit real credentials — the values above are placeholders.
 
 ---
 
-## Tools
+## Tools — 30 total
 
-30 tools, grouped by category. See [Example workflows](#example-workflows) for the ones you'll reach for most.
+Grouped by category. See [Example workflows](#example-workflows) for the ones you'll reach for most.
 
 ### Company Research
 
