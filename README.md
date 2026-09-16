@@ -1,77 +1,144 @@
-# screener-mcp — Indian Stock Research for Claude
+# screener-mcp
 
-> Turn Claude into a personal Indian equity analyst powered by live [Screener.in](https://www.screener.in) data — now with AI document analysis, NSE announcements, and research notebooks.
+An MCP (Model Context Protocol) server that gives Claude live access to [Screener.in](https://www.screener.in), NSE, and MCX data — turning Claude into a research assistant for Indian stocks.
 
 [![PyPI](https://img.shields.io/pypi/v/screener-mcp)](https://pypi.org/project/screener-mcp/)
 [![Python](https://img.shields.io/pypi/pyversions/screener-mcp)](https://pypi.org/project/screener-mcp/)
 [![CI](https://github.com/LogeshR15/screener-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/LogeshR15/screener-mcp/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
-**300+ active users** · [Report an issue](https://github.com/LogeshR15/screener-mcp/issues) · [LinkedIn](https://linkedin.com/in/logesh-ramasamy/) · logeshl2003@gmail.com
+[Report an issue](https://github.com/LogeshR15/screener-mcp/issues) · [LinkedIn](https://linkedin.com/in/logesh-ramasamy/) · logeshl2003@gmail.com
+
+`screener-mcp` connects Claude (Claude Code, Claude Desktop, or any MCP client) to Indian equity data: company financials, stock screening, annual reports, earnings calls, corporate announcements, and a local portfolio tracker. Point Claude at a company or a screen, and it does the research using real, current data instead of its training-data knowledge of the stock.
 
 ---
 
-## What you can ask
+## What you can do
 
 ```
 "Compare ITC and HUL on all key ratios"
-"Find chemical stocks with low debt and strong growth"
-"Explain Jyothy Labs like I'm a beginner"
-"What are the red flags in Asian Paints?"
-"Find hidden gems below ₹5000 crore market cap"
-"What did TCS management say about margins in Q3FY25?"
+"Find low-debt, high-ROCE chemical stocks"
 "Summarize the key risks from Reliance's 2024 annual report"
-"How has ITC's capex strategy evolved over the last 3 years?"
-"Which of TATASTEEL, JSWSTEEL, and SAIL mentioned raw material cost pressure recently?"
-"Show me recent dividend announcements for HDFCBANK"
-"How does copper price affect Havells and Polycab?"
+"What did TCS management say about margins in Q3FY25?"
+"What are the red flags in Asian Paints?"
+"Show me recent NSE announcements for HDFCBANK"
+"Find recent bulk deals in a stock"
+"Track my portfolio and show live P&L"
 "Save a research note on TITAN — strong Q3, watch margins"
 ```
 
 ---
 
-## Quick install
+## Quick start
+
+Requires [uv](https://github.com/astral-sh/uv) — `pip install uv` or `brew install uv`.
 
 ```bash
 claude mcp add screener -s user -- uvx --from 'screener-mcp[ai]' screener-mcp
 ```
 
-> Requires [uv](https://github.com/astral-sh/uv): `pip install uv` or `brew install uv`
->
-> The `[ai]` extra pulls in `pdfplumber`, `chromadb`, and `sentence-transformers` (~1-2GB, via torch) and is
-> required for `analyze_annual_report`, `analyze_earnings_call`, `ask_company_research`, and
-> `search_market_commentary`. Plain `uvx screener-mcp` installs only the lightweight core — those four tools
-> will fail with a "not installed" error until you add the extra.
-
-**Manual install:**
+This installs the full server, including document analysis (annual reports, earnings calls). If you only need company research and stock screening, drop the extra for a much lighter install:
 
 ```bash
-git clone https://github.com/LogeshR15/screener-mcp
-cd screener-mcp
-python3.11 -m venv .venv
-source .venv/bin/activate
-pip install --upgrade pip
-pip install -e .
-
-claude mcp add screener -s user -- \
-  $(pwd)/.venv/bin/python3.11 \
-  $(pwd)/run_server.py
+claude mcp add screener -s user -- uvx screener-mcp
 ```
 
-> No `python3.11` on your machine? Any Python **3.11+** works (e.g. `python3.12 -m venv .venv`) — just point `claude mcp add` at that same interpreter.
-> `pip install -e .` fails with "editable mode currently requires a setuptools-based build"? Your venv's `pip` is too old — run `pip install --upgrade pip` first (as above), then retry.
+> **Core vs. `[ai]`:** the base package covers company data, screening, NSE announcements, and portfolio tracking. The `[ai]` extra adds `pdfplumber`, `chromadb`, and `sentence-transformers` (~1–2GB, via torch) to power `analyze_annual_report`, `analyze_earnings_call`, `ask_company_research`, and `search_market_commentary`. Without it, those four tools return a "not installed" error — everything else works normally.
+
+Using Claude Desktop instead of Claude Code? See [Claude Desktop setup](#claude-desktop).
 
 ---
 
-## Claude Desktop setup
-
-Claude Desktop doesn't read `claude mcp add` — you edit its config file directly.
-
-**1.** Install [uv](https://github.com/astral-sh/uv) if you don't have it:
+## Verify it works
 
 ```bash
-brew install uv   # or: pip install uv
+claude mcp list
+# screener  stdio  Connected
 ```
+
+Then try a few prompts in Claude:
+
+```
+"Search for Asian Paints"
+"Give me the company overview for TCS"
+"List the pre-built screening themes"
+```
+
+If these return real data, the server is working end to end.
+
+---
+
+## What it provides
+
+- **Company research** — financials, ratios, shareholding, peer comparison, red-flag detection (no login required)
+- **Stock screening** — custom Screener.in-style queries and pre-built thematic screens (requires a free Screener.in login)
+- **Document analysis** — ask questions over annual reports and earnings call transcripts using a local RAG pipeline
+- **Corporate events** — NSE announcements, bulk deals, promoter pledge trends, credit ratings
+- **Market & research** — commodity price context, local research notes
+- **Portfolio** — a private, local holdings tracker with live P&L
+
+30 tools in total — full reference [below](#tools).
+
+---
+
+## Example workflows
+
+- **Compare companies** — `"Compare ITC and HUL on all key ratios"` → `compare_companies`
+- **Screen for opportunities** — `"Find low-debt, high-ROCE small caps"` → `screen_by_theme` or `screen_stocks`
+- **Read an annual report** — `"What are the key risks in Reliance's 2024 annual report?"` → `analyze_annual_report`
+- **Read an earnings call** — `"What did TCS say about margins in Q3FY25?"` → `analyze_earnings_call`
+- **Spot red flags** — `"What are the red flags in Asian Paints?"` → `analyze_red_flags`
+- **Track NSE activity** — `"Show recent announcements for HDFCBANK"` → `get_company_announcements`
+- **Research bulk deals** — `"Any recent bulk deals in TITAN?"` → `get_bulk_deals`
+- **Track a portfolio** — `"Add 10 shares of INFY at ₹1500 to my portfolio"` → `add_portfolio_stock`
+- **Save research** — `"Save a note on TITAN — strong Q3, watch margins"` → `notebook_ai`
+
+---
+
+## Architecture
+
+```
+Claude (Code / Desktop)
+        │  MCP
+        ▼
+  screener-mcp
+        │
+        ├──► Screener.in   (financials, ratios, screening)
+        ├──► NSE India     (announcements, bulk deals, filings)
+        └──► MCX India     (commodity prices)
+        │
+        ▼
+  Research data (parsed, cached, indexed)
+        │
+        ▼
+  Claude reasons over the data and answers
+```
+
+`screener-mcp` fetches and normalizes the data; Claude does the analysis and explains it in plain language.
+
+---
+
+## Installation options
+
+### Recommended
+
+```bash
+# Full install (company research, screening, documents, everything)
+claude mcp add screener -s user -- uvx --from 'screener-mcp[ai]' screener-mcp
+
+# Lightweight install (skip document analysis)
+claude mcp add screener -s user -- uvx screener-mcp
+```
+
+### Claude Code
+
+Use the `claude mcp add` commands above. Confirm with `claude mcp list`.
+
+### Claude Desktop
+
+Claude Desktop doesn't read `claude mcp add` — edit its config file directly.
+
+**1.** Install [uv](https://github.com/astral-sh/uv) if needed: `brew install uv` (or `pip install uv`)
 
 **2.** Open the config file:
 
@@ -79,9 +146,9 @@ brew install uv   # or: pip install uv
 - **Windows:** `%APPDATA%\Claude\claude_desktop_config.json`
 - **Linux:** `~/.config/Claude/claude_desktop_config.json`
 
-In the app you can also get there via **Settings → Developer → Edit Config**.
+(In the app: **Settings → Developer → Edit Config**.)
 
-**3.** Add the `screener` server (create the file with just this content if it doesn't exist):
+**3.** Add the `screener` server:
 
 ```json
 {
@@ -98,15 +165,46 @@ In the app you can also get there via **Settings → Developer → Edit Config**
 }
 ```
 
-The `env` block is how Claude Desktop passes credentials — it does **not** inherit
-your shell's `~/.zshrc` exports. Leave `env` out entirely if you only want the
-no-login company-research tools.
+Claude Desktop does **not** inherit your shell environment, so credentials must go in the `"env"` block here — see [Credentials](#credentials). Leave `"env"` out entirely if you only want the no-login company-research tools.
 
-> `spawn uvx ENOENT` on launch? Claude Desktop starts with a minimal `PATH` and
-> can't find `uvx`. Use the absolute path instead — run `which uvx` (e.g.
-> `/opt/homebrew/bin/uvx`) and put that in `"command"`.
+> `spawn uvx ENOENT` on launch? Claude Desktop starts with a minimal `PATH`. Run `which uvx` and use the absolute path (e.g. `/opt/homebrew/bin/uvx`) as `"command"`.
 
-**Already cloned the repo?** Point it at your venv interpreter instead:
+**4.** Quit Claude Desktop completely (**Cmd+Q** on macOS) and reopen it.
+
+**5.** Check the tools icon in the message composer — `screener` should list its 30 tools. Then ask: `"Search for Asian Paints"`.
+
+> Server not showing up? Check **Settings → Developer** for its status, and the logs at `~/Library/Application Support/Claude/logs/mcp-server-screener.log` (macOS) or `%APPDATA%\Claude\logs\` (Windows). Invalid JSON — often a stray trailing comma — makes Claude Desktop skip every server silently.
+
+### pip / PyPI
+
+The package is published on [PyPI](https://pypi.org/project/screener-mcp/) as `screener-mcp`. `uvx` (above) runs it without a persistent install; to install it into an environment instead:
+
+```bash
+pip install screener-mcp          # core
+pip install "screener-mcp[ai]"    # with document analysis
+```
+
+Then run it directly, or point `claude mcp add` at the `screener-mcp` entry point it installs.
+
+### Developer (local clone)
+
+```bash
+git clone https://github.com/LogeshR15/screener-mcp
+cd screener-mcp
+python3.11 -m venv .venv
+source .venv/bin/activate
+pip install --upgrade pip
+pip install -e .
+
+claude mcp add screener -s user -- \
+  $(pwd)/.venv/bin/python3.11 \
+  $(pwd)/run_server.py
+```
+
+> Any Python **3.11+** works — e.g. `python3.12 -m venv .venv` — just point `claude mcp add` at that interpreter.
+> `pip install -e .` failing with "editable mode currently requires a setuptools-based build"? Upgrade `pip` in the venv first (as above), then retry.
+
+**Already cloned it and using Claude Desktop?** Point the config at your venv interpreter instead of `uvx`:
 
 ```json
 {
@@ -119,114 +217,48 @@ no-login company-research tools.
 }
 ```
 
-**4.** Quit Claude Desktop completely (**Cmd+Q** on macOS — closing the window
-isn't enough) and reopen it.
+### Advanced: HTTP and Docker
 
-**5.** Check the tools icon in the message composer — `screener` should be listed
-with its 25 tools. Then ask: `"Search for Asian Paints"`.
-
-> Server not showing up? Open **Settings → Developer** to see its status, and
-> check the logs at `~/Library/Application Support/Claude/logs/mcp-server-screener.log`
-> (macOS) or `%APPDATA%\Claude\logs\` (Windows). Invalid JSON in the config —
-> a stray trailing comma is the usual culprit — makes Claude Desktop skip every
-> server silently.
+For remote/network deployment rather than a local stdio process, see [Remote HTTP server](#remote-http-server) and [Docker](#docker) below.
 
 ---
 
-## Credentials setup
+## Credentials
 
-Company financials work **without login**. Stock screening requires a free account.
+| Capability | Needs Screener.in login? |
+|---|:---:|
+| Company research (financials, ratios, shareholding, peers, red flags) | No |
+| Stock screening (`screen_stocks`, `screen_by_theme`) | Yes |
+| NSE announcements, bulk deals, credit ratings, commodities | No |
+| Document analysis, notebook, portfolio | No |
+
+**To enable screening:**
 
 **1.** Register free at [screener.in/register](https://www.screener.in/register/)
 
-**2.** Add to `~/.zshrc` or `~/.bashrc`:
+**2. Claude Code / manual runs** — add to `~/.zshrc` or `~/.bashrc`, then reload (`source ~/.zshrc`) and restart Claude Code:
 
 ```bash
 export SCREENER_USERNAME="your@email.com"
 export SCREENER_PASSWORD="yourpassword"
 ```
 
-**3.** Reload shell (`source ~/.zshrc`) and restart Claude Code.
+**3. Claude Desktop** — it does not read your shell profile, so the same two values must go in the `"env"` block of `claude_desktop_config.json` (see [Claude Desktop setup](#claude-desktop)):
 
-> Claude Desktop does not read your shell profile — put the same two values in the
-> `"env"` block of `claude_desktop_config.json` instead (see [Claude Desktop setup](#claude-desktop-setup)).
-
-**For document analysis** (annual reports, earnings calls), install extra deps:
-
-```bash
-pip install pdfplumber sentence-transformers chromadb
-# or: pip install -e ".[ai]"
+```json
+"env": {
+  "SCREENER_USERNAME": "your@email.com",
+  "SCREENER_PASSWORD": "yourpassword"
+}
 ```
+
+Never commit real credentials — the values above are placeholders.
 
 ---
 
-## Verify connection
+## Tools
 
-```bash
-claude mcp list
-# screener  stdio  Connected
-```
-
-Then ask Claude: `"Search for Asian Paints"` — you should get results.
-
----
-
-## Running as a remote server (HTTP)
-
-By default this runs over stdio — a local process, used by `claude mcp add`, Claude
-Desktop, and similar clients. Some integrations — any client that asks for an
-HTTPS **Server URL** — instead need a network server.
-
-Run it with HTTP transport:
-
-```bash
-MCP_TRANSPORT=streamable-http PORT=8000 python run_server.py
-# Serves MCP over HTTP at http://<host>:8000/mcp
-```
-
-Env vars:
-
-| Variable | Purpose | Default |
-|----------|---------|---------|
-| `SCREENER_USERNAME` | Screener.in login email (needed for screening tools) | — |
-| `SCREENER_PASSWORD` | Screener.in password | — |
-| `MCP_TRANSPORT` | `stdio` or `streamable-http` | `stdio` |
-| `PORT` / `MCP_PORT` | Port to listen on (HTTP transport only) | `8000` |
-| `MCP_HOST` | Bind address (HTTP transport only) | `0.0.0.0` |
-| `CHROMA_PERSIST_DIR` | Where the document-analysis vector store is cached | `~/.screener-mcp/chroma_db` |
-
-To get a public HTTPS URL, deploy this to any host that can run a long-lived
-Python process and terminate TLS for you (Render, Railway, Fly.io, a VM behind
-a reverse proxy, etc.), then point the client at `https://your-host/mcp`.
-
-> Note: a bare `streamable-http` server has no authentication. If you deploy
-> it publicly, put it behind your platform's access controls (API gateway,
-> IP allowlist, auth proxy) rather than exposing it to the open internet
-> unauthenticated — especially if you set `SCREENER_USERNAME`/`PASSWORD`,
-> since anyone who can reach the URL would act as your Screener.in account.
-
-### Deploying with Docker
-
-A `Dockerfile` is included. It installs the full `[ai]` extras (document
-analysis included) — expect a slow first build (~1-2GB with torch).
-
-```bash
-# Build and tag the image
-docker build -t screener-mcp:latest .
-
-# Run it, exposing the HTTP port and setting credentials
-docker run -p 8000:9000 \
-  -e PORT=9000 \
-  -e SCREENER_USERNAME=you@example.com \
-  -e SCREENER_PASSWORD=yourpassword \
-  screener-mcp:latest
-```
-
-Then point the client at `http://<host>:8000/mcp`.
-
----
-
-## Tools — 30 total
+30 tools, grouped by category. See [Example workflows](#example-workflows) for the ones you'll reach for most.
 
 ### Company Research
 
@@ -252,7 +284,7 @@ Then point the client at `http://<host>:8000/mcp`.
 | `screen_by_theme` | Pre-built thematic screens | Yes |
 | `list_investment_themes` | Show all available themes | No |
 
-### Document Analysis *(new)*
+### Document Analysis
 
 | Tool | What it does | Extra deps needed |
 |------|-------------|:---:|
@@ -262,10 +294,9 @@ Then point the client at `http://<host>:8000/mcp`.
 | `ask_company_research` | Ask a question across ALL of a company's cached documents at once (multiple years/quarters) | Yes |
 | `search_market_commentary` | Search a question across multiple companies' already-indexed documents at once | Yes |
 
-> Uses a local RAG pipeline: PDF → pdfplumber → ChromaDB → sentence-transformers. Results are cached on disk — the same report is never re-downloaded or re-indexed.
 > `ask_company_research` and `search_market_commentary` build on the same cache — the former indexes a company's recent documents and searches across them together (good for "how has X changed over time?"); the latter searches only what's *already* indexed across several symbols (good for "which of these companies mentioned Y?").
 
-### Corporate Events *(new)*
+### Corporate Events
 
 | Tool | What it does | Login needed |
 |------|-------------|:---:|
@@ -275,14 +306,14 @@ Then point the client at `http://<host>:8000/mcp`.
 | `get_promoter_pledge_history` | Dedicated promoter pledge % trend with severity flag | No |
 | `get_credit_ratings` | CRISIL/ICRA/CARE/India Ratings rating actions — a debt-quality check | No |
 
-### Market & Research *(new)*
+### Market & Research
 
 | Tool | What it does | Login needed |
 |------|-------------|:---:|
 | `get_commodity_prices` | Commodity price context + impacted companies | No |
 | `notebook_ai` | Save, read, and AI-summarize research notes locally | No |
 
-### Portfolio *(new)*
+### Portfolio
 
 | Tool | What it does | Login needed |
 |------|-------------|:---:|
@@ -295,7 +326,29 @@ Then point the client at `http://<host>:8000/mcp`.
 
 ---
 
-## Pre-built screening themes
+## Document analysis
+
+Document analysis (`[ai]` extra) uses a local RAG pipeline:
+
+```
+analyze_annual_report("TCS", 2024, "What are the key risks?")
+
+  1. Fetch PDF link from Screener.in / NSE
+  2. Download and parse with pdfplumber
+  3. Chunk into 500-word overlapping segments
+  4. Embed with sentence-transformers (runs locally, no API key needed)
+  5. Store in ChromaDB (~/.screener-mcp/chroma_db/)
+  6. Semantic search returns top-5 relevant excerpts
+  7. Claude reasons over the excerpts to answer your question
+```
+
+Results are cached — the same report is never re-downloaded or re-processed.
+
+---
+
+## Stock screening
+
+### Pre-built themes
 
 ```
 undervalued_small_cap       Small caps, ROCE > 15%, low debt, PE < 20
@@ -315,9 +368,7 @@ railways                    Railway infra/equipment companies
 renewable_energy            Renewable energy sector
 ```
 
----
-
-## Custom screen syntax
+### Custom screen syntax
 
 ```
 Market Capitalization < 5000 AND Return on capital employed > 15 AND Debt to equity < 0.5
@@ -331,32 +382,78 @@ Full field list in [CONTRIBUTING.md](CONTRIBUTING.md#screenerinscreenerinquery-f
 
 ---
 
-## How document analysis works
+## Remote HTTP server
 
+By default this runs over stdio — a local process, used by `claude mcp add`, Claude Desktop, and similar clients. Some integrations — any client that asks for an HTTPS **Server URL** — instead need a network server.
+
+Run it with HTTP transport:
+
+```bash
+MCP_TRANSPORT=streamable-http PORT=8000 python run_server.py
+# Serves MCP over HTTP at http://<host>:8000/mcp
 ```
-analyze_annual_report("TCS", 2024, "What are the key risks?")
 
-  1. Fetch PDF link from Screener.in / NSE
-  2. Download and parse with pdfplumber
-  3. Chunk into 500-word overlapping segments
-  4. Embed with sentence-transformers (runs locally, no API key needed)
-  5. Store in ChromaDB (~/.screener-mcp/chroma_db/)
-  6. Semantic search returns top-5 relevant excerpts
-  7. Claude reasons over the excerpts to answer your question
+Env vars:
 
-Results are cached — the same report is never re-processed twice.
-```
+| Variable | Purpose | Default |
+|----------|---------|---------|
+| `SCREENER_USERNAME` | Screener.in login email (needed for screening tools) | — |
+| `SCREENER_PASSWORD` | Screener.in password | — |
+| `MCP_TRANSPORT` | `stdio` or `streamable-http` | `stdio` |
+| `PORT` / `MCP_PORT` | Port to listen on (HTTP transport only) | `8000` |
+| `MCP_HOST` | Bind address (HTTP transport only) | `0.0.0.0` |
+| `CHROMA_PERSIST_DIR` | Where the document-analysis vector store is cached | `~/.screener-mcp/chroma_db` |
+
+To get a public HTTPS URL, deploy this to any host that can run a long-lived Python process and terminate TLS for you (Render, Railway, Fly.io, a VM behind a reverse proxy, etc.), then point the client at `https://your-host/mcp`.
+
+> A bare `streamable-http` server has no authentication. If you deploy it publicly, put it behind your platform's access controls (API gateway, IP allowlist, auth proxy) rather than exposing it to the open internet unauthenticated — especially if you set `SCREENER_USERNAME`/`PASSWORD`, since anyone who can reach the URL would act as your Screener.in account.
 
 ---
 
-## Architecture
+## Docker
+
+A `Dockerfile` is included. It installs the full `[ai]` extras (document analysis included) — expect a slow first build (~1-2GB with torch).
+
+```bash
+# Build and tag the image
+docker build -t screener-mcp:latest .
+
+# Run it, exposing the HTTP port and setting credentials
+docker run -p 8000:9000 \
+  -e PORT=9000 \
+  -e SCREENER_USERNAME=you@example.com \
+  -e SCREENER_PASSWORD=yourpassword \
+  screener-mcp:latest
+```
+
+Then point the client at `http://<host>:8000/mcp`.
+
+---
+
+## Data sources & limitations
+
+| Source | Data provided |
+|--------|--------------|
+| [Screener.in](https://www.screener.in) | 10+ years of financials, ratios, shareholding, peers |
+| [NSE India](https://www.nseindia.com) | Announcements, annual reports, bulk deals |
+| [MCX India](https://www.mcxindia.com) | Commodity prices (best-effort) |
+
+- Financial data lags by ~1 quarter
+- Document analysis requires machine-readable PDFs (scanned/image-only PDFs may fail)
+- NSE bulk deals only capture single trades > 0.5% of equity
+- `get_company_announcements` and `search_shareholder` depend on NSE's public API, which frequently rate-limits or blocks server IPs (403/404 responses) — if a query returns "no data found", it may be NSE blocking the request rather than an empty result
+- This is a research tool — not financial advice
+
+---
+
+## Project layout
 
 ```
 screener-mcp/
 ├── run_server.py
 ├── tests/                          # Offline registry + docs-consistency tests
 └── src/screener_mcp/
-    ├── server.py                   # FastMCP — all 23 tool definitions
+    ├── server.py                   # FastMCP — all 30 tool definitions
     ├── client.py                   # Screener.in HTTP client + auth
     ├── core/
     │   ├── nse_client.py           # NSE India API (announcements, filings)
@@ -378,24 +475,6 @@ screener-mcp/
 
 ---
 
-## Data sources & limitations
-
-| Source | Data provided |
-|--------|--------------|
-| [Screener.in](https://www.screener.in) | 10+ years of financials, ratios, shareholding, peers |
-| [NSE India](https://www.nseindia.com) | Announcements, annual reports, bulk deals |
-| [MCX India](https://www.mcxindia.com) | Commodity prices (best-effort) |
-
-- Financial data lags by ~1 quarter
-- Document analysis requires machine-readable PDFs (scanned/image-only PDFs may fail)
-- NSE bulk deals only capture single trades > 0.5% of equity
-- `get_company_announcements` and `search_shareholder` depend on NSE's public API, which
-  frequently rate-limits or blocks server IPs (403/404 responses) — if a query returns
-  "no data found", it may be NSE blocking the request rather than an empty result
-- This is a research tool — not financial advice
-
----
-
 ## Contributing
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) — adding a new tool takes ~10 minutes.
@@ -408,11 +487,7 @@ pip install -e ".[dev]"
 pytest
 ```
 
-The test suite is offline — no network, no Screener.in credentials — and
-checks that the tool registry and the docs still agree with each other. If you
-add or rename a tool, tests fail until you update `EXPECTED_TOOLS` in
-[`tests/test_tools.py`](tests/test_tools.py), the `server.py` docstring, and
-the README tool table.
+The test suite is offline — no network, no Screener.in credentials — and checks that the tool registry and the docs still agree with each other. If you add or rename a tool, tests fail until you update `EXPECTED_TOOLS` in [`tests/test_tools.py`](tests/test_tools.py), the `server.py` docstring, and the README tool table.
 
 **Dependency files:**
 - `pyproject.toml` — the source of truth; `[ai]` extra adds document analysis
