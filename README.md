@@ -16,7 +16,7 @@ An MCP (Model Context Protocol) server that gives Claude live access to [Screene
 ## What you can do
 
 ```
-"Compare ITC and HUL on all key ratios"
+"Compare ITC and HINDUNILVR on all key ratios"
 "Find low-debt, high-ROCE chemical stocks"
 "Summarize the key risks from Reliance's 2024 annual report"
 "What did TCS management say about margins in Q3FY25?"
@@ -73,17 +73,17 @@ If these return real data, the server is working end to end.
 - **Company research** — financials, ratios, shareholding, peer comparison, red-flag detection (no login required)
 - **Stock screening** — custom Screener.in-style queries and pre-built thematic screens (requires a free Screener.in login)
 - **Document analysis** — ask questions over annual reports and earnings call transcripts using a local RAG pipeline
-- **Corporate events** — NSE announcements, bulk deals, promoter pledge trends, credit ratings
+- **Corporate events** — NSE announcements, bulk deals, insider trading disclosures, promoter pledge trends, credit ratings
 - **Market & research** — commodity price context, local research notes
 - **Portfolio** — a private, local holdings tracker with live P&L
 
-30 tools in total — full reference [below](#tools--30-total).
+31 tools in total — full reference [below](#tools--31-total).
 
 ---
 
 ## Example workflows
 
-- **Compare companies** — `"Compare ITC and HUL on all key ratios"` → `compare_companies`
+- **Compare companies** — `"Compare ITC and HINDUNILVR on all key ratios"` → `compare_companies`
 - **Screen for opportunities** — `"Find low-debt, high-ROCE small caps"` → `screen_by_theme` or `screen_stocks`
 - **Read an annual report** — `"What are the key risks in Reliance's 2024 annual report?"` → `analyze_annual_report`
 - **Read an earnings call** — `"What did TCS say about margins in Q3FY25?"` → `analyze_earnings_call`
@@ -171,7 +171,7 @@ Claude Desktop does **not** inherit your shell environment, so credentials must 
 
 **4.** Quit Claude Desktop completely (**Cmd+Q** on macOS) and reopen it.
 
-**5.** Check the tools icon in the message composer — `screener` should list its 30 tools. Then ask: `"Search for Asian Paints"`.
+**5.** Check the tools icon in the message composer — `screener` should list its 31 tools. Then ask: `"Search for Asian Paints"`.
 
 > Server not showing up? Check **Settings → Developer** for its status, and the logs at `~/Library/Application Support/Claude/logs/mcp-server-screener.log` (macOS) or `%APPDATA%\Claude\logs\` (Windows). Invalid JSON — often a stray trailing comma — makes Claude Desktop skip every server silently.
 
@@ -436,7 +436,7 @@ Then point the client at `http://<host>:8000/mcp`.
 | Source | Data provided |
 |--------|--------------|
 | [Screener.in](https://www.screener.in) | 10+ years of financials, ratios, shareholding, peers |
-| [NSE India](https://www.nseindia.com) | Announcements, annual reports, bulk deals |
+| [NSE India](https://www.nseindia.com) | Announcements, annual reports, bulk deals, insider trading disclosures |
 | [MCX India](https://www.mcxindia.com) | Commodity prices (best-effort) |
 
 - Financial data lags by ~1 quarter
@@ -454,7 +454,7 @@ screener-mcp/
 ├── run_server.py
 ├── tests/                          # Offline registry + docs-consistency tests
 └── src/screener_mcp/
-    ├── server.py                   # FastMCP — all 30 tool definitions
+    ├── server.py                   # FastMCP — all 31 tool definitions
     ├── client.py                   # Screener.in HTTP client + auth
     ├── core/
     │   ├── nse_client.py           # NSE India API (announcements, filings)
@@ -468,10 +468,12 @@ screener-mcp/
         ├── screening_tools.py      # Stock screening + themes
         ├── analysis_tools.py       # Deep analysis, red flags, beginner
         ├── documents.py            # Annual reports + earnings calls (RAG)
-        ├── announcements.py        # NSE corporate announcements
+        ├── announcements.py        # NSE corporate announcements + credit ratings
         ├── shareholders.py         # Bulk deal / shareholder search
+        ├── insider_trading.py      # SEBI PIT insider trading disclosures
         ├── commodities.py          # Commodity price analysis
-        └── notebook.py             # Research notes
+        ├── notebook.py             # Research notes
+        └── portfolio.py            # Local portfolio tracker
 ```
 
 ---
