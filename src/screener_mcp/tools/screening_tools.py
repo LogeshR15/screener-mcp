@@ -146,7 +146,7 @@ Stock screening on Screener.in requires a free account. To enable it:
 - `get_financials("SYMBOL")` — P&L, balance sheet, cash flow
 - `get_quarterly_results("SYMBOL")` — last 8 quarters
 - `get_shareholding_pattern("SYMBOL")` — promoter/FII/DII trends
-- `compare_companies(["ITC", "HUL"])` — side-by-side comparison
+- `compare_companies(["ITC", "HINDUNILVR"])` — side-by-side comparison
 """
 
 

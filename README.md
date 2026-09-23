@@ -256,7 +256,7 @@ Never commit real credentials — the values above are placeholders.
 
 ---
 
-## Tools — 30 total
+## Tools — 31 total
 
 Grouped by category. See [Example workflows](#example-workflows) for the ones you'll reach for most.
 
@@ -303,6 +303,7 @@ Grouped by category. See [Example workflows](#example-workflows) for the ones yo
 | `get_company_announcements` | NSE corporate announcements with category filter | No |
 | `search_shareholder` | Find investor activity via NSE bulk deals | No |
 | `get_bulk_deals` | All NSE bulk deals for one company — no investor name needed | No |
+| `get_insider_trading` | SEBI PIT promoter/KMP/designated-person trade disclosures, no size threshold | No |
 | `get_promoter_pledge_history` | Dedicated promoter pledge % trend with severity flag | No |
 | `get_credit_ratings` | CRISIL/ICRA/CARE/India Ratings rating actions — a debt-quality check | No |
 

@@ -103,17 +103,22 @@ def parse_overview(html: str) -> dict[str, Any]:
         name_tag = soup.find("h1")
     name = _clean(name_tag.get_text()) if name_tag else "Unknown"
 
-    # BSE / NSE codes — strip "BSE: " / "NSE: " prefixes from link text
-    codes_tag = soup.find("div", class_="company-links")
+    # BSE / NSE codes — Screener no longer wraps these in a stable
+    # "company-links" container, so match the exchange links anywhere on the
+    # page by href instead of relying on a CSS class that has since changed.
+    # Skip the NSE "derivatives" (F&O) link, which has no code in its text.
     bse, nse = "", ""
-    if codes_tag:
-        for a in codes_tag.find_all("a"):
-            href = a.get("href", "")
-            text = _clean(a.get_text())
-            if "bseindia" in href:
-                bse = re.sub(r"(?i)^BSE\s*:\s*", "", text).strip()
-            elif "nseindia" in href:
-                nse = re.sub(r"(?i)^NSE\s*:\s*", "", text).strip()
+    for a in soup.find_all("a", href=True):
+        href = a["href"]
+        text = _clean(a.get_text())
+        if not bse and "bseindia.com" in href:
+            code = re.sub(r"(?i)^BSE\s*:?\s*", "", text).strip()
+            if code:
+                bse = code
+        elif not nse and "nseindia.com/get-quotes/equity" in href:
+            code = re.sub(r"(?i)^NSE\s*:?\s*", "", text).strip()
+            if code:
+                nse = code
 
     # About text
     about_tag = soup.find(id="about")

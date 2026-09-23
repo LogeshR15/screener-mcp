@@ -77,27 +77,40 @@ def _parse_annual_reports(html: str) -> list[dict]:
 
 
 def _parse_earnings_calls(html: str) -> list[dict]:
-    """Extract earnings call transcript links from the Screener.in company page."""
+    """Extract earnings call transcript links from the Screener.in company page.
+
+    Screener nests these under `#documents .concalls`, not a dedicated
+    "concalls"/"transcripts" element id — each entry is an `<li>` whose first
+    text node is a "Mon YYYY" period label (not a proper "Q_FY__" quarter),
+    followed by chip links ("Transcript", "AI Summary", "PPT", "REC").
+    """
     soup = BeautifulSoup(html, "lxml")
     transcripts = []
 
-    for section_id in ["earning-calls-transcripts", "transcripts", "concalls", "investor-presentations"]:
-        section = soup.find(id=section_id)
-        if not section:
+    documents_section = soup.find(id="documents")
+    concalls_box = documents_section.find(class_="concalls") if documents_section else None
+    if not concalls_box:
+        return transcripts
+
+    for li in concalls_box.select("ul.list-links li"):
+        link = next(
+            (a for a in li.find_all("a", href=True) if "transcript" in a.get_text(strip=True).lower()),
+            None,
+        )
+        if not link:
             continue
-        for a in section.find_all("a", href=True):
-            href = a["href"]
-            text = re.sub(r"\s+", " ", a.get_text()).strip()
-            quarter = re.search(r"Q[1-4]\s*FY?\s*\d{2,4}", text, re.I)
-            url = href if href.startswith("http") else f"https://www.screener.in{href}"
-            transcripts.append({
-                "quarter": quarter.group().upper().replace(" ", "") if quarter else text[:30],
-                "title": text or "Earnings Call Transcript",
-                "url": url,
-                "type": "earnings_call",
-                "source": "screener",
-            })
-        break
+        href = link["href"]
+        # The period label is the <li>'s leading text, before the chip links.
+        period = re.sub(r"\s+", " ", li.get_text(" ", strip=True)).split(" Transcript")[0].strip()
+        quarter = re.search(r"Q[1-4]\s*FY?\s*\d{2,4}", period, re.I)
+        url = href if href.startswith("http") else f"https://www.screener.in{href}"
+        transcripts.append({
+            "quarter": quarter.group().upper().replace(" ", "") if quarter else period or "Unknown",
+            "title": f"Earnings Call Transcript — {period}" if period else "Earnings Call Transcript",
+            "url": url,
+            "type": "earnings_call",
+            "source": "screener",
+        })
 
     return transcripts
 
@@ -235,6 +248,35 @@ Structure your response as:
 """
 
 
+_FY_QUARTER_RE = re.compile(r"^Q([1-4])FY(\d{2,4})$")
+# Indian fiscal year FY25 = Apr 2024-Mar 2025. Concalls follow quarter-end by
+# ~2-6 weeks: Q1 (Apr-Jun) -> Jul, Q2 (Jul-Sep) -> Oct, both in the FY's
+# *start* calendar year; Q3 (Oct-Dec) -> Jan, Q4 (Jan-Mar) -> Apr/May, both
+# in the FY's *end* calendar year. Screener labels transcripts with a plain
+# "Mon YYYY" (e.g. "Jul 2024"), not a fiscal-quarter string — this bridges
+# a "Q1FY25"-style request to that label.
+_QUARTER_END_MONTHS = {
+    "1": ("JUL", "start"), "2": ("OCT", "start"),
+    "3": ("JAN", "end"), "4": ("APR", "end"),
+}
+
+
+def _quarter_to_month_labels(quarter_clean: str) -> set[str]:
+    """Map "Q1FY25" style input to the "MONYYYY" labels Screener actually uses."""
+    m = _FY_QUARTER_RE.match(quarter_clean)
+    if not m:
+        return set()
+    q, fy = m.group(1), m.group(2)
+    fy_num = int(fy) if len(fy) == 2 else int(fy) % 100
+    fy_start_year, fy_end_year = 2000 + fy_num - 1, 2000 + fy_num
+    month, which_year = _QUARTER_END_MONTHS[q]
+    year = fy_end_year if which_year == "end" else fy_start_year
+    labels = {f"{month}{year}"}
+    if q == "4":
+        labels.add(f"MAY{year}")
+    return labels
+
+
 async def analyze_earnings_call(
     symbol: str,
     quarter: str,
@@ -256,9 +298,10 @@ async def analyze_earnings_call(
         html = await client.get_html(f"/company/{symbol.upper()}/consolidated/")
         calls = _parse_earnings_calls(html)
 
+        candidates = {quarter_clean} | _quarter_to_month_labels(quarter_clean)
         matched = [
             c for c in calls
-            if quarter_clean in c.get("quarter", "").upper().replace(" ", "")
+            if any(cand in c.get("quarter", "").upper().replace(" ", "") for cand in candidates)
         ]
         if not matched and calls:
             available = [c.get("quarter") for c in calls]

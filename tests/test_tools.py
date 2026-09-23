@@ -48,6 +48,7 @@ EXPECTED_TOOLS = {
     "get_company_announcements",
     "search_shareholder",
     "get_bulk_deals",
+    "get_insider_trading",
     "get_promoter_pledge_history",
     "get_credit_ratings",
     # Market & research

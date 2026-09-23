@@ -44,16 +44,7 @@ async def search_shareholder(
         )
 
     name_lower = name.lower()
-
-    def _name_fields(d: dict) -> str:
-        return " ".join([
-            str(d.get("clientName", "")),
-            str(d.get("client_name", "")),
-            str(d.get("buyerSellName", "")),
-            str(d.get("client", "")),
-        ]).lower()
-
-    matched = [d for d in deals if name_lower in _name_fields(d)]
+    matched = [d for d in deals if name_lower in str(d.get("clientName", "")).lower()]
 
     if not matched:
         return (
@@ -77,14 +68,12 @@ async def search_shareholder(
     ]
 
     for d in matched[:40]:
-        date = str(d.get("tradDt", d.get("date", "")))[:10]
-        company = str(d.get("symbol", d.get("scripCode", "")))[:19]
-        bs = str(d.get("buySell", d.get("buy_sell", "?")))[:4]
-        qty = str(d.get("quantityTraded", d.get("qty", "")))
-        price = str(d.get("tradePrice", d.get("price", "")))
-        client = str(
-            d.get("clientName") or d.get("client_name") or d.get("buyerSellName") or ""
-        )[:35]
+        date = str(d.get("date", ""))[:12]
+        company = str(d.get("symbol", ""))[:19]
+        bs = str(d.get("buySell", "?"))[:4]
+        qty = str(d.get("quantityTraded", ""))
+        price = str(d.get("tradePrice", ""))
+        client = str(d.get("clientName", ""))[:35]
         lines.append(f"{date:<12} {company:<20} {bs:<5} {qty:<15} {price:<10} {client}")
 
     if len(matched) > 40:
@@ -94,6 +83,11 @@ async def search_shareholder(
         "\n**Note:** NSE bulk deals (>0.5% of equity in a single trade) only. "
         "For full shareholding, use `get_shareholding_pattern(symbol)`."
     )
+    if days > 30:
+        lines.append(
+            "\n**Coverage caveat:** NSE's public bulk-deals endpoint only serves one day "
+            f"per request, so this only covers the most recent 30 days, not all {days}."
+        )
     return "\n".join(lines)
 
 
@@ -133,13 +127,11 @@ async def get_bulk_deals(symbol: str, days: int = 90) -> str:
     ]
 
     for d in deals[:50]:
-        date = str(d.get("tradDt", d.get("date", "")))[:10]
-        bs = str(d.get("buySell", d.get("buy_sell", "?")))[:4]
-        qty = str(d.get("quantityTraded", d.get("qty", "")))
-        price = str(d.get("tradePrice", d.get("price", "")))
-        client = str(
-            d.get("clientName") or d.get("client_name") or d.get("buyerSellName") or ""
-        )[:40]
+        date = str(d.get("date", ""))[:12]
+        bs = str(d.get("buySell", "?"))[:4]
+        qty = str(d.get("quantityTraded", ""))
+        price = str(d.get("tradePrice", ""))
+        client = str(d.get("clientName", ""))[:40]
         lines.append(f"{date:<12} {bs:<5} {qty:<15} {price:<10} {client}")
 
     if len(deals) > 50:
@@ -149,4 +141,9 @@ async def get_bulk_deals(symbol: str, days: int = 90) -> str:
         "\n**Note:** NSE bulk deals (>0.5% of equity in a single trade) only. "
         "For a specific investor across companies, use `search_shareholder(name)`."
     )
+    if days > 30:
+        lines.append(
+            "\n**Coverage caveat:** NSE's public bulk-deals endpoint only serves one day "
+            f"per request, so this only covers the most recent 30 days, not all {days}."
+        )
     return "\n".join(lines)

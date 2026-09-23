@@ -1,7 +1,7 @@
 """
 Screener.in MCP Server — Indian Stock Research Assistant
 
-Tools exposed to Claude (25 total):
+Tools exposed to Claude (31 total):
   search_company              — find a company by name or symbol
   get_company_overview        — key ratios, about, price data
   get_financials              — P&L / Balance Sheet / Cash Flow / Ratios history
@@ -24,6 +24,7 @@ Tools exposed to Claude (25 total):
   get_company_announcements   — fetch recent NSE corporate announcements
   search_shareholder          — find bulk deal activity by investor name
   get_bulk_deals              — all bulk deals for one company (no investor name needed)
+  get_insider_trading         — SEBI PIT promoter/KMP/designated-person trade disclosures
   get_promoter_pledge_history — dedicated promoter pledge % trend with severity flag
   get_credit_ratings          — CRISIL/ICRA/CARE rating actions, a debt-quality check
   get_commodity_prices        — commodity price context and company impact analysis
@@ -93,6 +94,7 @@ from .tools.shareholders import (
     search_shareholder as _search_shareholder,
     get_bulk_deals as _get_bulk_deals,
 )
+from .tools.insider_trading import get_insider_trading as _get_insider_trading
 from .tools.commodities import get_commodity_prices as _get_commodity_prices
 from .tools.notebook import notebook_ai as _notebook_ai
 from .tools.portfolio import (
@@ -326,11 +328,11 @@ async def compare_companies(symbols: list[str], financial_type: str = "consolida
     Fetches data for each company and presents them in a comparative table.
     Best for "ITC vs HUL vs Nestle" type questions.
 
-    symbols: list of NSE/BSE symbols, e.g., ["ITC", "HUL", "NESTLE"]
+    symbols: list of NSE/BSE symbols, e.g., ["ITC", "HINDUNILVR", "NESTLEIND"]
     financial_type: "consolidated" or "standalone"
 
     Examples:
-      compare_companies(["ITC", "HUL"])
+      compare_companies(["ITC", "HINDUNILVR"])
       compare_companies(["TCS", "INFY", "WIPRO", "HCLTECH"])
       compare_companies(["PIDILITIND", "ASIANPAINT", "BERGEPAINT"])
     """
@@ -466,7 +468,7 @@ async def compare_stocks_ui(symbols: list[str] | str) -> dict:
     Examples:
       compare_stocks_ui(["TCS", "INFY", "WIPRO"])
       compare_stocks_ui(["HDFCBANK", "ICICIBANK", "AXISBANK"])
-      compare_stocks_ui("HUL,ITC,NESTLEIND")
+      compare_stocks_ui("HINDUNILVR,ITC,NESTLEIND")
 
     Note: use NSE trading symbols, not company names (e.g. "INFY" not "INFOSYS").
     """
@@ -709,6 +711,25 @@ async def get_bulk_deals(symbol: str, days: int = 90) -> str:
       get_bulk_deals("ADANIENT", days=180)
     """
     return await _safe(_get_bulk_deals)(symbol, days)
+
+
+@mcp.tool(annotations={"title": "Get Insider Trading", "readOnlyHint": True, "openWorldHint": True})
+async def get_insider_trading(symbol: str) -> str:
+    """
+    Recent insider trading disclosures (SEBI PIT Regulation 7(2)) for a company.
+
+    Shows promoter/KMP/designated-person trades — buy or sell, quantity,
+    value, and holding before/after — with no minimum trade size. This is
+    different from `get_bulk_deals`/`search_shareholder`, which only catch
+    single trades over 0.5% of equity and so miss most insider activity.
+
+    symbol: NSE trading symbol (e.g., "RELIANCE", "INFY")
+
+    Examples:
+      get_insider_trading("RELIANCE")
+      get_insider_trading("ADANIENT")
+    """
+    return await _safe(_get_insider_trading)(symbol)
 
 
 @mcp.tool(annotations={"title": "Get Promoter Pledge History", "readOnlyHint": True, "openWorldHint": True})
