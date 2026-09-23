@@ -508,15 +508,15 @@ async def search_market_commentary(
 
     if not results_by_symbol:
         hint = (
-            f"\n\nNone of these symbols have indexed documents yet. Run "
-            f"`ask_company_research(symbol, question)` for each one first, "
-            f"then retry this search."
+            "\n\nNone of these symbols have indexed documents yet. Run "
+            "`ask_company_research(symbol, question)` for each one first, "
+            "then retry this search."
             if uncached_symbols == symbols
             else ""
         )
         return f"**No relevant content found** across {', '.join(symbols)}.{hint}"
 
-    lines = [f"# Cross-Company Search", "", f"**Question:** {question}", ""]
+    lines = ["# Cross-Company Search", "", f"**Question:** {question}", ""]
 
     for sym, chunks in results_by_symbol.items():
         lines.append(f"## {sym}")

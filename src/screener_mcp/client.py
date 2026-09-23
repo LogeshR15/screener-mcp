@@ -9,11 +9,10 @@ Authentication flow:
 """
 
 import os
-import re
 import asyncio
 import logging
 from typing import Optional
-from urllib.parse import urljoin, urlencode
+from urllib.parse import urljoin
 
 import httpx
 from bs4 import BeautifulSoup

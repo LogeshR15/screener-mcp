@@ -54,7 +54,6 @@ Run:
 """
 
 import httpx
-import json
 import os
 import re
 from pathlib import Path
@@ -106,7 +105,7 @@ from .tools.portfolio import (
 
 def _safe(result):
     """Wrap a coroutine so network/auth errors become readable messages."""
-    import asyncio, functools
+    import functools
     async def wrapper(*args, **kwargs):
         try:
             return await result(*args, **kwargs)
@@ -116,7 +115,7 @@ def _safe(result):
             return "**Request timed out.** Screener.in is taking too long to respond — try again in a moment."
         except httpx.HTTPStatusError as e:
             if e.response.status_code == 404:
-                return f"**Company not found.** Check the symbol and try `search_company()` to find the correct NSE/BSE code."
+                return "**Company not found.** Check the symbol and try `search_company()` to find the correct NSE/BSE code."
             return f"**Screener.in returned an error** ({e.response.status_code}). The site may be down — try again shortly."
         except httpx.NetworkError:
             return "**Cannot reach Screener.in.** Check your internet connection and try again."

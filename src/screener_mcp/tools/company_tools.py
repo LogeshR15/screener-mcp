@@ -4,7 +4,6 @@ They fetch the Screener.in page, parse it, and return formatted text
 that Claude can read naturally.
 """
 
-import json
 from typing import Literal
 
 from ..client import get_client
@@ -19,7 +18,6 @@ from ..parsers.company import (
     parse_peers,
     parse_peers_ajax,
     parse_warehouse_id,
-    parse_full_page,
 )
 from ..parsers.screener import parse_search_results
 
@@ -84,8 +82,8 @@ async def get_company_overview(symbol: str, financial_type: FinancialType = "con
         f"**Current Price**: {data.get('current_price') or '—'}  |  **52W High**: {data.get('52_week_high') or '—'}  |  **52W Low**: {data.get('52_week_low') or '—'}",
         "",
         "## Key Metrics",
-        f"| Metric | Value |",
-        f"|--------|-------|",
+        "| Metric | Value |",
+        "|--------|-------|",
     ]
     for k, v in ratios.items():
         lines.append(f"| {k} | {v} |")

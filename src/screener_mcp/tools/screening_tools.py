@@ -4,7 +4,6 @@ and return formatted results with analyst commentary.
 """
 
 from typing import Optional
-from urllib.parse import quote_plus
 
 from ..client import get_client
 from ..parsers.screener import parse_screen_results
@@ -187,7 +186,7 @@ async def screen_stocks(
     columns = data.get("columns", [])
 
     lines = [
-        f"## Screener Results",
+        "## Screener Results",
         f"**Query**: `{query}`",
         f"**Total matches**: {count_text}  |  Showing top {len(companies)}",
         "",

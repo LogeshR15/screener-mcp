@@ -3,9 +3,6 @@ Higher-level analysis tools — these fetch and combine multiple data sources
 to produce analyst-grade structured output for Claude to reason over.
 """
 
-import asyncio
-from typing import Optional
-
 from ..client import get_client
 from ..parsers.company import parse_full_page
 
