@@ -6,16 +6,37 @@
 <title>Screener MCP — Indian Stock Market MCP Server for Claude</title>
 <meta name="description" content="Screener MCP is an open-source Model Context Protocol server that gives Claude live access to Indian equity market data from Screener.in, NSE, and MCX — company research, stock screening, financials, portfolio tracking, and more.">
 <meta name="keywords" content="MCP server, Model Context Protocol, Claude, Screener.in, Indian stock market, NSE, stock screening, equity research, AI stock analysis, Claude MCP, screener-mcp">
+<meta name="robots" content="index, follow, max-image-preview:large">
+<meta name="googlebot" content="index, follow">
+<meta name="author" content="Logesh Ramasamy">
+<meta name="theme-color" content="#22c55e">
 <link rel="canonical" href="https://logeshr15.github.io/screener-mcp/">
 
+<!-- Favicons -->
+<link rel="icon" type="image/x-icon" href="favicon.ico">
+<link rel="icon" type="image/png" sizes="32x32" href="favicon-32.png">
+<link rel="icon" type="image/png" sizes="16x16" href="favicon-16.png">
+<link rel="apple-touch-icon" sizes="180x180" href="apple-touch-icon.png">
+<link rel="manifest" href="site.webmanifest">
+
+<!-- Open Graph -->
 <meta property="og:type" content="website">
+<meta property="og:site_name" content="Screener MCP">
 <meta property="og:title" content="Screener MCP — Indian Stock Market MCP Server for Claude">
 <meta property="og:description" content="Give Claude live access to Indian equity market data — company research, stock screening, financials, and portfolio tracking, powered by Screener.in, NSE, and MCX.">
 <meta property="og:url" content="https://logeshr15.github.io/screener-mcp/">
+<meta property="og:image" content="https://logeshr15.github.io/screener-mcp/og-image.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="Screener MCP — Indian stock research inside Claude">
+<meta property="og:locale" content="en_US">
 
+<!-- Twitter -->
 <meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:title" content="Screener MCP — Indian Stock Market MCP Server for Claude">
 <meta name="twitter:description" content="Open-source MCP server for Indian equity research inside Claude. 31 tools covering company research, screening, financials, and portfolio tracking.">
+<meta name="twitter:image" content="https://logeshr15.github.io/screener-mcp/og-image.png">
+<meta name="twitter:image:alt" content="Screener MCP — Indian stock research inside Claude">
 
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -30,9 +51,64 @@
   "operatingSystem": "Cross-platform",
   "description": "An MCP (Model Context Protocol) server giving Claude live access to Indian equity market data from Screener.in, NSE, and MCX.",
   "url": "https://logeshr15.github.io/screener-mcp/",
+  "image": "https://logeshr15.github.io/screener-mcp/og-image.png",
   "codeRepository": "https://github.com/LogeshR15/screener-mcp",
   "license": "https://github.com/LogeshR15/screener-mcp/blob/main/LICENSE",
+  "softwareVersion": "latest",
+  "author": {
+    "@type": "Person",
+    "name": "Logesh Ramasamy",
+    "url": "https://www.linkedin.com/in/logesh-ramasamy/"
+  },
   "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" }
+}
+</script>
+
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "BreadcrumbList",
+  "itemListElement": [
+    {
+      "@type": "ListItem",
+      "position": 1,
+      "name": "Screener MCP",
+      "item": "https://logeshr15.github.io/screener-mcp/"
+    }
+  ]
+}
+</script>
+
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "FAQPage",
+  "mainEntity": [
+    {
+      "@type": "Question",
+      "name": "What is Screener MCP?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "Screener MCP is an open-source Model Context Protocol (MCP) server that gives Claude live access to Indian equity market data from Screener.in, NSE, and MCX, including company research, stock screening, financials, and portfolio tracking."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "Does Screener MCP require an API key?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "No API keys are required for company research. A free Screener.in login is only needed for the stock screening tools."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "How do I install Screener MCP?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "Run 'claude mcp add screener -s user -- uvx --from screener-mcp[ai] screener-mcp' for the full install, or 'claude mcp add screener -s user -- uvx screener-mcp' for a lightweight install without document analysis."
+      }
+    }
+  ]
 }
 </script>
 
@@ -420,6 +496,25 @@
     font-weight: 800;
   }
 
+  /* FAQ */
+  .faq-list { display: flex; flex-direction: column; gap: 12px; max-width: 720px; }
+  .faq-item {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    padding: 20px 22px;
+  }
+  .faq-item h3 { margin: 0 0 8px; font-size: 15.5px; font-weight: 650; }
+  .faq-item p { margin: 0; font-size: 14px; color: var(--text-dim); }
+  .faq-item code {
+    font-family: "JetBrains Mono", ui-monospace, Menlo, Consolas, monospace;
+    font-size: 12.5px;
+    background: var(--code-bg);
+    color: var(--accent-bright);
+    padding: 2px 6px;
+    border-radius: 5px;
+  }
+
   /* final CTA */
   .final-cta {
     text-align: center;
@@ -469,6 +564,7 @@
       <a href="#features">Features</a>
       <a href="#install">Install</a>
       <a href="#requirements">Requirements</a>
+      <a href="#faq">FAQ</a>
       <a class="icon-link" href="https://github.com/LogeshR15/screener-mcp" target="_blank" rel="noopener" aria-label="GitHub repository">
         <svg width="20" height="20" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg>
       </a>
@@ -586,6 +682,25 @@
       <div class="prereq-item"><span class="check">✓</span> <a href="https://docs.astral.sh/uv/" target="_blank" rel="noopener" style="color:var(--accent-bright); font-weight:600; text-decoration:none;">uv</a>&nbsp;package manager</div>
       <div class="prereq-item"><span class="check">✓</span> No API keys — company research works out of the box</div>
       <div class="prereq-item"><span class="check">✓</span> Free Screener.in login only for screening tools</div>
+    </div>
+  </section>
+
+  <section id="faq">
+    <p class="section-tag">FAQ</p>
+    <h2>Common questions</h2>
+    <div class="faq-list">
+      <div class="faq-item">
+        <h3>What is Screener MCP?</h3>
+        <p>Screener MCP is an open-source Model Context Protocol (MCP) server that gives Claude live access to Indian equity market data from Screener.in, NSE, and MCX, including company research, stock screening, financials, and portfolio tracking.</p>
+      </div>
+      <div class="faq-item">
+        <h3>Does Screener MCP require an API key?</h3>
+        <p>No API keys are required for company research. A free Screener.in login is only needed for the stock screening tools.</p>
+      </div>
+      <div class="faq-item">
+        <h3>How do I install Screener MCP?</h3>
+        <p>Run <code>claude mcp add screener -s user -- uvx --from 'screener-mcp[ai]' screener-mcp</code> for the full install, or drop <code>[ai]</code> for a lightweight install without document analysis.</p>
+      </div>
     </div>
   </section>
 

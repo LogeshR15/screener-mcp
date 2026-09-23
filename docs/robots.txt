@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://logeshr15.github.io/screener-mcp/sitemap.xml
