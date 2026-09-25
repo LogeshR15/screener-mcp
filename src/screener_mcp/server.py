@@ -1,7 +1,7 @@
 """
 Screener.in MCP Server — Indian Stock Research Assistant
 
-Tools exposed to Claude (33 total):
+Tools exposed to Claude (35 total):
   search_company              — find a company by name or symbol
   get_company_overview        — key ratios, about, price data
   get_financials              — P&L / Balance Sheet / Cash Flow / Ratios history
@@ -12,6 +12,8 @@ Tools exposed to Claude (33 total):
   screen_stocks               — Screener.in query + technical clauses (52W distance, RSI, DMA, volume)
   get_52_week_low_candidates  — quality stocks near their 52-week low, in one call
   compare_to_sector           — stock's move vs its sector index and Nifty 50
+  get_recent_news             — recent news headlines (Google News)
+  get_analyst_targets         — consensus target price + broker targets in recent headlines
   screen_by_theme             — pre-built thematic screens
   list_investment_themes      — list available theme screens
   get_full_analysis           — ALL data for deep-dive reasoning
@@ -80,6 +82,10 @@ from .tools.screening_tools import (
 from .tools.technical_tools import (
     get_52_week_low_candidates as _get_52w_low,
     compare_to_sector as _compare_to_sector,
+)
+from .tools.market_tools import (
+    get_recent_news as _get_recent_news,
+    get_analyst_targets as _get_analyst_targets,
 )
 from .tools.analysis_tools import (
     get_full_analysis as _full_analysis,
@@ -320,6 +326,52 @@ async def compare_to_sector(symbol: str, days: int = 30, benchmark: str = "") ->
     return await _safe(_compare_to_sector)(symbol, days, benchmark)
 
 
+@mcp.tool(annotations={"title": "Get Recent News", "readOnlyHint": True, "openWorldHint": True})
+async def get_recent_news(symbol: str, days: int = 14, limit: int = 20) -> dict:
+    """
+    Recent news headlines about a company (Google News, Indian edition).
+
+    Returns publisher, publish time (UTC) and link for each headline, newest
+    first, de-duplicated. Use it for the "what's happened lately" context that
+    financial statements can't show — results reactions, brokerage calls,
+    management moves, price hikes, regulatory news. For the company's own
+    exchange filings use get_company_announcements instead.
+
+    symbol: NSE/BSE symbol or company name
+    days: look-back window (1-90, default 14)
+    limit: max headlines (default 20)
+
+    Examples:
+      get_recent_news("TMPV")
+      get_recent_news("Garden Reach", days=30)
+    """
+    return await _safe(_get_recent_news)(symbol, days, limit)
+
+
+@mcp.tool(annotations={"title": "Get Analyst Targets", "readOnlyHint": True, "openWorldHint": True})
+async def get_analyst_targets(symbol: str) -> dict:
+    """
+    Analyst price targets for a stock, from two independent sources:
+
+    1. Consensus (Yahoo Finance): mean / median / high / low target, number
+       of analysts, implied upside vs the current price, and the
+       strong-buy/buy/hold/sell/strong-sell split.
+    2. Broker targets mentioned in the last 60 days of news headlines
+       (e.g. "ICICI Securities target ₹370"), with links to each article.
+
+    The two come from different broker sets and dates, so they rarely match;
+    both are labelled with their source. Returns partial=true if one source is
+    unavailable, or if the stock has no analyst coverage.
+
+    symbol: NSE/BSE symbol or company name
+
+    Examples:
+      get_analyst_targets("TMPV")
+      get_analyst_targets("HDFCBANK")
+    """
+    return await _safe(_get_analyst_targets)(symbol)
+
+
 @mcp.tool(annotations={"title": "Screen By Theme", "readOnlyHint": True, "openWorldHint": True})
 async def screen_by_theme(theme: str, limit: int = 20) -> dict:
     """
@@ -365,6 +417,10 @@ async def list_investment_themes() -> dict:
 async def get_company_overview(symbol: str, financial_type: str = "consolidated") -> dict:
     """
     Get a company's key ratios, current price, 52-week range, and about section.
+
+    data.price_freshness says when the price is from (price_as_of), whether
+    it's an intraday print or the last close, the previous close and the
+    day's change — so you can tell how current "current_price" is.
 
     symbol: NSE/BSE symbol (e.g., "TCS", "INFY", "RELIANCE", "HDFCBANK")
     financial_type: "consolidated" (default) or "standalone"

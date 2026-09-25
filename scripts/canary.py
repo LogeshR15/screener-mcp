@@ -119,9 +119,20 @@ async def nse_announcements():
     _check(d.get("total_announcements_fetched", 0) > 0, "NSE returned no announcements for TCS")
 
 
+async def news_feed():
+    d = _ok(await server.get_recent_news("TCS", days=14), "news")
+    _check(d.get("count", 0) > 0, "Google News returned no TCS headlines in 14 days")
+
+
+async def analyst_consensus():
+    env = await server.get_analyst_targets("TCS")
+    d = _ok(env, "analyst targets")
+    _check(d.get("consensus") and d["consensus"].get("analysts", 0) > 5, f"no TCS consensus: {env.get('warnings')}")
+
+
 HARD = [overview_consolidated, overview_standalone_fallback, financial_tables, symbol_resolution,
         technical_screen, sector_compare, peers]
-SOFT = [nse_announcements]
+SOFT = [nse_announcements, news_feed, analyst_consensus]  # third-party feeds: warn, don't fail
 
 
 async def main() -> int:

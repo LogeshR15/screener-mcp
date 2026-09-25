@@ -20,6 +20,7 @@ An MCP (Model Context Protocol) server that gives Claude live access to [Screene
 "Find low-debt, high-ROCE chemical stocks"
 "Quality stocks within 10% of their 52-week low"
 "Has MSUMI fallen more than the auto sector over the last 60 days?"
+"What are analysts' target prices for TMPV, and what's the latest news?"
 "Summarize the key risks from Reliance's 2024 annual report"
 "What did TCS management say about margins in Q3FY25?"
 "What are the red flags in Asian Paints?"
@@ -80,7 +81,7 @@ If these return real data, the server is working end to end.
 - **Market & research** — commodity price context, local research notes
 - **Portfolio** — a private, local holdings tracker with live P&L
 
-33 tools in total — full reference [below](#tools--33-total). Every tool returns the same [response envelope](#response-envelope), so partial or degraded data is always explicit.
+35 tools in total — full reference [below](#tools--35-total). Every tool returns the same [response envelope](#response-envelope), so partial or degraded data is always explicit.
 
 ---
 
@@ -90,6 +91,7 @@ If these return real data, the server is working end to end.
 - **Screen for opportunities** — `"Find low-debt, high-ROCE small caps"` → `screen_by_theme` or `screen_stocks`
 - **Find pullbacks** — `"High-ROCE, low-debt stocks near their 52-week low"` → `get_52_week_low_candidates`, or `screen_stocks("Return on capital employed > 15 AND 52 week low distance < 10")`
 - **Market vs company-specific** — `"Is this fall sector-wide or just this stock?"` → `compare_to_sector`
+- **What the Street thinks** — `"Analyst targets and recent news for TMPV"` → `get_analyst_targets`, `get_recent_news`
 - **Read an annual report** — `"What are the key risks in Reliance's 2024 annual report?"` → `analyze_annual_report`
 - **Read an earnings call** — `"What did TCS say about margins in Q3FY25?"` → `analyze_earnings_call`
 - **Spot red flags** — `"What are the red flags in Asian Paints?"` → `analyze_red_flags`
@@ -176,7 +178,7 @@ Claude Desktop does **not** inherit your shell environment, so credentials must 
 
 **4.** Quit Claude Desktop completely (**Cmd+Q** on macOS) and reopen it.
 
-**5.** Check the tools icon in the message composer — `screener` should list its 33 tools. Then ask: `"Search for Asian Paints"`.
+**5.** Check the tools icon in the message composer — `screener` should list its 35 tools. Then ask: `"Search for Asian Paints"`.
 
 > Server not showing up? Check **Settings → Developer** for its status, and the logs at `~/Library/Application Support/Claude/logs/mcp-server-screener.log` (macOS) or `%APPDATA%\Claude\logs\` (Windows). Invalid JSON — often a stray trailing comma — makes Claude Desktop skip every server silently.
 
@@ -262,7 +264,7 @@ Never commit real credentials — the values above are placeholders.
 
 ---
 
-## Tools — 33 total
+## Tools — 35 total
 
 Grouped by category. See [Example workflows](#example-workflows) for the ones you'll reach for most.
 
@@ -319,6 +321,8 @@ Grouped by category. See [Example workflows](#example-workflows) for the ones yo
 
 | Tool | What it does | Login needed |
 |------|-------------|:---:|
+| `get_recent_news` | Recent news headlines for a company (Google News), newest first | No |
+| `get_analyst_targets` | Consensus target price (mean/median/high/low, analyst count, rating split) + broker targets in recent headlines | No |
 | `get_commodity_prices` | Benchmark price, period moves, ≈INR price + impacted companies | No |
 | `notebook_ai` | Save, read, and AI-summarize research notes locally | No |
 
@@ -495,11 +499,14 @@ Then point the client at `http://<host>:8000/mcp`.
 |--------|--------------|
 | [Screener.in](https://www.screener.in) | 10+ years of financials, ratios, shareholding, peers |
 | [NSE India](https://www.nseindia.com) | Announcements, annual reports, bulk deals, insider trading disclosures |
-| [Yahoo Finance](https://finance.yahoo.com) chart API | International commodity benchmarks (COMEX, ICE Brent, NYMEX) and USD/INR |
+| [Yahoo Finance](https://finance.yahoo.com) | International commodity benchmarks (COMEX, ICE Brent, NYMEX), USD/INR, analyst consensus targets |
+| [Google News](https://news.google.com) RSS | Recent headlines, including broker target-price mentions |
 
 - Financial data lags by ~1 quarter
 - Screener.in rate-limits bursts. The client paces requests (`SCREENER_MIN_INTERVAL`, default 0.25s) and caps concurrency (`SCREENER_MAX_CONCURRENCY`, default 3). Any 429 pauses all requests for a shared cooldown, and requests are then retried. Price history is cached in `~/.screener-mcp/price_cache`: during market hours for 15 minutes, otherwise until the next session. A cold technical screen can take a minute; repeat screens are fast. Set `SCREENER_PRICE_CACHE=0` to disable the cache
 - Commodity prices are the international benchmarks MCX contracts track. The INR figure is a plain FX conversion, before import duty and GST, so it's below the MCX quote. Nickel has no free feed and returns `partial`
+- `get_company_overview` returns `data.price_freshness`: `price_as_of`, whether the price is an intraday print or the last close, the previous close and the day's change. A price older than a few days is flagged as stale
+- Analyst targets come from two sources that cover different brokers and dates, so they won't match: Yahoo Finance's consensus and targets extracted from recent headlines. Treat either as one view, not the market's
 - For banks, NBFCs and insurers, debt-to-equity and working-capital-day checks are skipped because they aren't meaningful for lenders. Judge these companies on ROE, asset quality and capital adequacy
 - Document analysis requires machine-readable PDFs (scanned/image-only PDFs may fail)
 - NSE bulk deals only capture single trades > 0.5% of equity
@@ -516,7 +523,7 @@ screener-mcp/
 ├── scripts/canary.py               # Daily live check against Screener.in (see .github/workflows/canary.yml)
 ├── tests/                          # Offline tests (no network) + a real-page fixture
 └── src/screener_mcp/
-    ├── server.py                   # FastMCP — all 33 tool definitions
+    ├── server.py                   # FastMCP — all 35 tool definitions
     ├── client.py                   # Screener.in HTTP client + auth
     ├── core/
     │   ├── envelope.py             # Standard response envelope for every tool
@@ -524,6 +531,7 @@ screener-mcp/
     │   ├── quality.py              # Missing-field detection + ratio sanity bounds
     │   ├── technicals.py           # Price history → 52W range, DMA, RSI, volume ratio
     │   ├── indices.py              # NSE index universes + sector benchmarks
+    │   ├── yahoo.py                # Yahoo Finance session (consensus targets)
     │   ├── nse_client.py           # NSE India API (announcements, filings)
     │   ├── rag.py                  # PDF → chunk → embed → query pipeline
     │   └── vector_store.py         # ChromaDB wrapper
@@ -542,6 +550,7 @@ screener-mcp/
         ├── announcements.py        # NSE corporate announcements + credit ratings
         ├── shareholders.py         # Bulk deal / shareholder search
         ├── insider_trading.py      # SEBI PIT insider trading disclosures
+        ├── market_tools.py         # Recent news + analyst targets
         ├── commodities.py          # Commodity price analysis
         ├── notebook.py             # Research notes
         └── portfolio.py            # Local portfolio tracker

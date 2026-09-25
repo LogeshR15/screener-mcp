@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "screener-mcp"
-version = "0.3.0"
+version = "0.4.0"
 description = "Indian Stock Research MCP server powered by Screener.in"
 readme = "README.md"
 license = { text = "MIT" }

@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.4.0 — unreleased
+
+### Added
+- **`get_analyst_targets`** returns two views. The first is Yahoo Finance's
+  consensus: mean, median, high and low target, analyst count, implied
+  upside and the buy/hold/sell split. The second is broker target prices
+  pulled from the last 60 days of headlines, with article links. Figures
+  that can't be targets, such as capex amounts in crores, are filtered out.
+  If one source is down the result is `partial`.
+- **`get_recent_news`**: recent headlines from Google News (Indian edition),
+  de-duplicated and newest first, with publisher, time and link.
+- **Price freshness in `get_company_overview`.** `data.price_freshness`
+  gives `price_as_of`, whether the price is an intraday print or the last
+  close, the previous close and the day's change. Stale prices are flagged.
+
+> 0.3.0 was tagged but never reached PyPI: the publish token was rejected.
+> 0.4.0 includes everything from 0.3.0.
+
 ## 0.3.0 — 2026-09-25
 
 ### Breaking

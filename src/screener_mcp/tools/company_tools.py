@@ -11,6 +11,7 @@ from ..client import get_client
 from ..core.company_page import CompanyPage, fetch_company_page, search_candidates
 from ..core.envelope import ToolError, ToolResult
 from ..core.numbers import blank_to_none, to_number
+from ..core.technicals import price_freshness
 from ..core.quality import (
     OVERVIEW_CORE_FIELDS,
     annotate_rows,
@@ -104,7 +105,19 @@ async def get_company_overview(symbol: str, financial_type: FinancialType = "con
     ov = parse_overview(page.html)
     data, missing, reason = overview_data(page, ov)
     data["about"] = blank_to_none(ov.get("about"))
-    return page_result(page, data, missing=missing, reason=reason)
+    warnings = []
+    if page.company_id:
+        # A bare "current price" can't be judged without a timestamp.
+        try:
+            freshness = await price_freshness(page.company_id)
+        except Exception as e:
+            freshness = {}
+            warnings.append(f"Couldn't determine how fresh the price is ({type(e).__name__}).")
+        if freshness:
+            data["price_freshness"] = freshness
+            if freshness.get("stale"):
+                warnings.append(freshness["stale_note"])
+    return page_result(page, data, warnings=warnings, missing=missing, reason=reason)
 
 
 async def get_financials(
