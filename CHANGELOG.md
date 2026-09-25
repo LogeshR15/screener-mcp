@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.3.0 — unreleased
+## 0.3.0 — 2026-09-25
 
 ### Breaking
 - **Every tool returns a JSON envelope** instead of a markdown string:
