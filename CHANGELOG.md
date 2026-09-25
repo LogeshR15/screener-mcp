@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.4.0 — unreleased
+## 0.4.0 — 2026-09-26
 
 ### Added
 - **`get_analyst_targets`** returns two views. The first is Yahoo Finance's
