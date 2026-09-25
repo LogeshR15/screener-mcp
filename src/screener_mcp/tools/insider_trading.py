@@ -10,6 +10,8 @@ that actually signals insider sentiment.
 
 import logging
 
+from ..core.company_page import resolve_nse_symbol
+from ..core.envelope import ToolResult
 from ..core.nse_client import get_nse_client
 
 logger = logging.getLogger(__name__)
@@ -20,61 +22,61 @@ def _fmt_date(raw: str) -> str:
     return raw.split(" ")[0] if raw else ""
 
 
-async def get_insider_trading(symbol: str) -> str:
+async def get_insider_trading(symbol: str) -> ToolResult:
     """
     Recent insider trading disclosures (SEBI PIT Regulation 7(2)) for a company.
 
-    symbol: NSE trading symbol (e.g., "RELIANCE", "INFY")
+    symbol: NSE trading symbol or company name (resolved via Screener.in)
 
     Shows who traded (promoter/KMP/designated person), buy or sell,
     quantity, value, and their holding before/after — a signal bulk
     deals miss because it has no minimum trade-size threshold.
     """
-    if not symbol.strip():
-        return "**Error:** Please provide an NSE symbol."
-
+    nse_symbol, warnings, meta = await resolve_nse_symbol(symbol)
     nse = await get_nse_client()
-    filings = await nse.get_insider_trading(symbol)
+    filings = await nse.get_insider_trading(nse_symbol)  # raises NSEError on failure
 
-    if not filings:
-        return (
-            f"**No insider trading disclosures found for {symbol.upper()}.**\n\n"
-            "Possible reasons:\n"
-            f"  - Symbol is incorrect — use `search_company('{symbol}')` to verify\n"
-            "  - NSE API is temporarily unavailable\n"
-            "  - No promoter/KMP/designated-person trades reported recently\n"
-        )
+    def num(v):
+        return int(v) if str(v or "").isdigit() else None
 
-    lines = [
-        f"# Insider Trading — {symbol.upper()}",
-        f"SEBI PIT Regulation 7(2) disclosures | {len(filings)} filing(s)",
-        "",
-    ]
-
+    rows, incomplete = [], 0
     for f in filings:
-        date = _fmt_date(f.get("broadcastDateTime", ""))
-        person = f.get("personName") or "Unknown"
-        category = f.get("personCategory") or "—"
-        txn = (f.get("transactionType") or "—").upper()
-        qty = f.get("securitiesTraded") or "—"
-        value = f.get("tradeValue") or ""
-        value_fmt = f"₹{int(value):,}" if str(value).isdigit() else "—"
-        mode = f.get("modeOfAcquisition") or "—"
-        pre = f.get("holdingPrePct") or ""
-        post = f.get("holdingPostPct") or ""
+        if f.get("_detail_error"):
+            incomplete += 1
+        value = f.get("tradeValue")
+        rows.append({
+            "date": _fmt_date(f.get("broadcastDateTime", "")) or None,
+            "person": f.get("personName") or None,
+            "person_category": f.get("personCategory") or None,
+            "transaction": (f.get("transactionType") or "").upper() or None,
+            "shares": num(f.get("securitiesTraded")),
+            "value_inr": num(value),
+            "mode": f.get("modeOfAcquisition") or None,
+            "holding_pre_pct": f.get("holdingPrePct") or None,
+            "holding_post_pct": f.get("holdingPostPct") or None,
+            "note": f.get("revisionRemark") or None,
+            **({"details_unavailable": True} if f.get("_detail_error") else {}),
+        })
 
-        lines.append(f"## {date} — {person} ({category})")
-        lines.append(f"  {txn} {qty} shares | Value: {value_fmt} | Mode: {mode}")
-        if pre or post:
-            lines.append(f"  Holding: {pre or '?'}% -> {post or '?'}%")
-        if f.get("revisionRemark"):
-            lines.append(f"  Note: {f['revisionRemark']}")
-        lines.append("")
-
-    lines.append(
-        "**Note:** Covers every disclosed promoter/KMP/designated-person trade, "
-        "regardless of size. For large third-party block trades, use "
-        "`get_bulk_deals(symbol)` or `search_shareholder(name)` instead. "
-        "For aggregate FII/DII/Promoter %, use `get_shareholding_pattern(symbol)`."
+    if not rows:
+        warnings.append(
+            f"NSE reports no insider-trading (PIT) disclosures for {nse_symbol} recently. "
+            "The request succeeded, so this is a real empty result."
+        )
+    reason = None
+    if incomplete:
+        reason = (f"Trade details (person, quantity, value) couldn't be fetched for {incomplete} of "
+                  f"{len(rows)} filing(s) — those rows are marked details_unavailable.")
+    return ToolResult(
+        data={
+            "symbol": nse_symbol,
+            "filings": rows,
+            "note": ("Covers every disclosed promoter/KMP/designated-person trade regardless of size. "
+                     "For large third-party block trades use get_bulk_deals; for aggregate holdings "
+                     "use get_shareholding_pattern."),
+        },
+        warnings=warnings,
+        partial=bool(incomplete),
+        reason=reason,
+        meta=meta,
     )
-    return "\n".join(lines)

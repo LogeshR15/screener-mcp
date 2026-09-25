@@ -61,6 +61,7 @@ import re
 from pathlib import Path
 from mcp.server.fastmcp import FastMCP
 from .core.envelope import ToolError, ToolResult, error_envelope, to_envelope
+from .core.nse_client import NSEError
 from .tools.company_tools import (
     search_company as _search_company,
     get_company_overview as _get_overview,
@@ -119,6 +120,12 @@ def _safe(result):
             return to_envelope(await result(*args, **kwargs))
         except ToolError as e:
             return error_envelope(e.message, e.error_type, **e.details)
+        except NSEError as e:
+            return error_envelope(
+                f"{e}. This is an NSE-side failure, not an empty result — retry shortly.",
+                "upstream_unavailable",
+                source="nse",
+            )
         except PermissionError as e:
             return error_envelope(
                 f"Login required. {e} Set SCREENER_USERNAME and SCREENER_PASSWORD env vars, then restart the server.",

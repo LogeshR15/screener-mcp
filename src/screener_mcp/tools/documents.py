@@ -12,7 +12,7 @@ from bs4 import BeautifulSoup
 
 from ..core.company_page import fetch_company_page
 from ..core.envelope import ToolError, ToolResult
-from ..core.nse_client import get_nse_client
+from ..core.nse_client import NSEError, get_nse_client
 from ..core.rag import process_document, query_document, query_documents
 from ..core.vector_store import get_vector_store
 
@@ -145,8 +145,12 @@ async def get_document_list(symbol: str) -> ToolResult:
     screener_calls = _parse_earnings_calls(html)
 
     nse_reports = []
+    nse_warning = []
     if not screener_reports:
-        nse_reports = await nse.get_annual_reports(symbol)
+        try:
+            nse_reports = await nse.get_annual_reports(symbol)
+        except NSEError as e:
+            nse_warning = [f"NSE annual-report lookup failed ({e}) — list may be incomplete."]
 
     all_reports = screener_reports or nse_reports
     all_calls = screener_calls
@@ -179,7 +183,13 @@ async def get_document_list(symbol: str) -> ToolResult:
     lines.append("`analyze_earnings_call(symbol, quarter, question)` to ask questions about these documents.")
     lines.append("You can also pass `pdf_url` directly if you have the link.")
 
-    return ToolResult(data={"report": "\n".join(lines)}, warnings=page.warnings, meta=page.meta)
+    return ToolResult(
+        data={"report": "\n".join(lines)},
+        warnings=page.warnings + nse_warning,
+        partial=bool(nse_warning),
+        reason=nse_warning[0] if nse_warning else None,
+        meta=page.meta,
+    )
 
 
 async def analyze_annual_report(
@@ -207,7 +217,10 @@ async def analyze_annual_report(
 
         if not reports:
             nse = await get_nse_client()
-            reports = await nse.get_annual_reports(symbol)
+            try:
+                reports = await nse.get_annual_reports(symbol)
+            except NSEError as e:
+                warnings.append(f"NSE annual-report lookup failed ({e}).")
 
         matched = [r for r in reports if str(year) in str(r.get("year", ""))]
         if not matched:
@@ -438,9 +451,13 @@ async def ask_company_research(
     symbol, html = page.symbol, page.html
 
     reports = _parse_annual_reports(html) if include_annual_reports else []
+    nse_warning = []
     if not reports and include_annual_reports:
         nse = await get_nse_client()
-        reports = await nse.get_annual_reports(symbol)
+        try:
+            reports = await nse.get_annual_reports(symbol)
+        except NSEError as e:
+            nse_warning = [f"NSE annual-report lookup failed ({e}) — annual reports may be missing."]
     calls = _parse_earnings_calls(html) if include_earnings_calls else []
 
     reports = sorted(reports, key=lambda r: r.get("year", ""), reverse=True)[:max_annual_reports]
@@ -459,7 +476,7 @@ async def ask_company_research(
     indexed_labels: list[str] = []
     errors: list[str] = []
     documents: list[dict] = []
-    warnings: list[str] = list(page.warnings)
+    warnings: list[str] = list(page.warnings) + nse_warning
 
     for r in reports:
         name = f"{symbol}_{r.get('year', 'Unknown')}_annual"

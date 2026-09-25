@@ -405,3 +405,76 @@ async def test_freshness_reports_timestamp_hash_and_url_change(tmp_path, monkeyp
     assert same["source_changed"] is None  # no validators recorded → can't tell
     moved = await rag.freshness("TCS_2024_annual", "https://x/ar-revised.pdf")
     assert moved["source_changed"] is True
+
+
+# ─── NSE-backed tools: failure must never look like "no data" ─────────────────
+
+from screener_mcp.core import nse_client as nse_mod  # noqa: E402
+from screener_mcp.tools import announcements as ann_mod, shareholders as sh_mod  # noqa: E402
+
+
+class FakeNSE:
+    def __init__(self, announcements=None, fail=None, bulk=None):
+        self._ann, self._fail, self._bulk = announcements, fail, bulk
+
+    async def get_announcements(self, symbol):
+        if self._fail:
+            raise nse_mod.NSEError(self._fail)
+        return self._ann or []
+
+    async def get_bulk_deals(self, from_date, to_date, symbol=None):
+        return self._bulk
+
+
+@pytest.fixture
+def nse_symbol_ok(monkeypatch):
+    async def fake_resolve(symbol):
+        return symbol.upper(), [], {"symbol": symbol.upper()}
+
+    monkeypatch.setattr(ann_mod, "resolve_nse_symbol", fake_resolve)
+    monkeypatch.setattr(sh_mod, "resolve_nse_symbol", fake_resolve)
+
+
+async def test_nse_block_is_an_error_not_an_empty_result(monkeypatch, nse_symbol_ok):
+    async def fake_client():
+        return FakeNSE(fail="NSE API returned HTTP 403 for /api/corporate-announcements")
+
+    monkeypatch.setattr(ann_mod, "get_nse_client", fake_client)
+    env = await server.get_company_announcements("TCS")
+    assert env["status"] == "error"
+    assert env["error"]["type"] == "upstream_unavailable" and "403" in env["reason"]
+
+
+async def test_nse_genuinely_empty_is_ok_with_warning(monkeypatch, nse_symbol_ok):
+    async def fake_client():
+        return FakeNSE(announcements=[])
+
+    monkeypatch.setattr(ann_mod, "get_nse_client", fake_client)
+    env = await server.get_company_announcements("TCS")
+    assert env["status"] == "ok" and env["data"]["announcements"] == []
+    assert "request succeeded" in env["warnings"][0]
+
+
+async def test_bulk_deals_with_failed_days_is_partial(monkeypatch, nse_symbol_ok):
+    rows = [{"date": "01-Sep-2026", "buySell": "BUY", "quantityTraded": "100", "tradePrice": "10", "clientName": "X"}]
+
+    async def fake_client():
+        return FakeNSE(bulk=(rows, ["02-09-2026", "03-09-2026"], 30))
+
+    monkeypatch.setattr(sh_mod, "get_nse_client", fake_client)
+    env = await server.get_bulk_deals("TCS", days=90)
+    assert env["status"] == "partial"
+    assert "2 of 30 days" in env["reason"]
+    assert any("30 of the requested 90" in w for w in env["warnings"])
+    assert env["data"]["count"] == 1
+
+
+async def test_bse_only_company_is_a_clear_error(fake_pages):
+    fake_pages[("543498", "standalone")] = FULL_PAGE  # fixture page has no NSE link
+    env = await server.get_insider_trading("543498")
+    assert env["status"] == "error" and env["error"]["type"] == "not_on_nse"
+
+
+async def test_invalid_input_is_structured_error():
+    env = await server.get_company_announcements("TCS", category="gossip")
+    assert env["status"] == "error" and env["error"]["type"] == "invalid_input"

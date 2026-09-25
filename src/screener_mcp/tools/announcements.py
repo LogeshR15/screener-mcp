@@ -5,6 +5,8 @@ Company announcements — fetch and filter NSE corporate disclosures.
 import logging
 from datetime import datetime
 
+from ..core.company_page import resolve_nse_symbol
+from ..core.envelope import ToolError, ToolResult
 from ..core.nse_client import get_nse_client
 
 logger = logging.getLogger(__name__)
@@ -41,94 +43,96 @@ def _within_days(date_str: str, days: int) -> bool:
     return True  # include if unparseable
 
 
-async def get_company_announcements(
-    symbol: str,
-    category: str = "all",
-    days: int = 30,
-) -> str:
-    """
-    Fetch recent company announcements from NSE.
-
-    symbol: NSE trading symbol (e.g., "TCS", "RELIANCE")
-    category: "all" | "results" | "board_meeting" | "dividend" | "insider_trading"
-              | "agm" | "acquisition" | "buyback" | "fund_raise"
-    days: look back this many days (default 30, max 365)
-    """
+async def _fetch_filtered(symbol: str, category: str, days: int) -> tuple[str, list[dict], int, list[str], dict]:
     valid_categories = {"all"} | set(_CATEGORY_KEYWORDS.keys())
     if category not in valid_categories:
-        return (
-            f"**Invalid category '{category}'.**\n\n"
-            f"Valid options: {', '.join(sorted(valid_categories))}"
+        raise ToolError(
+            f"Invalid category '{category}'. Valid options: {', '.join(sorted(valid_categories))}",
+            "invalid_input",
         )
-
+    days = max(1, min(int(days or 30), 3650))
+    nse_symbol, warnings, meta = await resolve_nse_symbol(symbol)
     nse = await get_nse_client()
-    items = await nse.get_announcements(symbol)
-
-    if not items:
-        return (
-            f"**No announcements found for {symbol.upper()}.**\n\n"
-            f"Possible reasons:\n"
-            f"  - Symbol is incorrect — use `search_company('{symbol}')` to verify\n"
-            f"  - NSE API is temporarily unavailable\n"
-            f"  - Company has no recent announcements\n"
-        )
+    items = await nse.get_announcements(nse_symbol)  # raises NSEError on failure
 
     filtered = [a for a in items if _within_days(a.get("date", ""), days)]
-
     if category != "all":
         filtered = [
             a for a in filtered
             if _categorize(a.get("headline", ""), a.get("category", "")) == category
         ]
-
-    if not filtered:
-        return (
-            f"**No {category} announcements found for {symbol.upper()} in the last {days} days.**\n\n"
-            f"Total announcements (all categories, all dates): {len(items)}\n"
-            f"Try: `category='all'` or increase `days`."
-        )
-
-    lines = [
-        f"# Company Announcements — {symbol.upper()}",
-        f"Filter: {category} | Last {days} days | {len(filtered)} found",
-        "",
+    rows = [
+        {
+            "date": a.get("date") or None,
+            "category": _categorize(a.get("headline", ""), a.get("category", "")),
+            "nse_category": a.get("category") or None,
+            "headline": (a.get("headline") or a.get("category") or "")[:300] or None,
+            "url": a.get("url") or None,
+        }
+        for a in filtered
     ]
-
-    shown = filtered[:50]
-    for ann in shown:
-        date = ann.get("date", "Unknown date")
-        headline = (ann.get("headline") or ann.get("category") or "No description")[:120]
-        cat = _categorize(ann.get("headline", ""), ann.get("category", ""))
-        url = ann.get("url", "")
-
-        lines.append(f"[{date}] [{cat.upper()}]")
-        lines.append(f"  {headline}")
-        if url:
-            lines.append(f"  PDF: {url}")
-        lines.append("")
-
-    if len(filtered) > 50:
-        lines.append(f"... and {len(filtered) - 50} more. Narrow with `category` or reduce `days`.")
-
-    return "\n".join(lines)
+    return nse_symbol, rows, len(items), warnings, meta
 
 
-async def get_credit_ratings(symbol: str, days: int = 730) -> str:
+async def get_company_announcements(
+    symbol: str,
+    category: str = "all",
+    days: int = 30,
+) -> ToolResult:
+    """
+    Fetch recent company announcements from NSE.
+
+    symbol: NSE trading symbol or company name (resolved via Screener.in)
+    category: "all" | "results" | "board_meeting" | "dividend" | "insider_trading"
+              | "agm" | "acquisition" | "buyback" | "fund_raise" | "credit_rating"
+    days: look back this many days (default 30)
+    """
+    nse_symbol, rows, total, warnings, meta = await _fetch_filtered(symbol, category, days)
+    if total == 0:
+        warnings.append(
+            f"NSE returned no announcements at all for {nse_symbol}. The request succeeded, "
+            "so this is NSE's answer rather than a failure — but it's unusual for a listed company."
+        )
+    elif not rows:
+        warnings.append(
+            f"No {category} announcements in the last {days} days ({total} announcements "
+            "across all categories/dates). Try category='all' or a larger `days`."
+        )
+    limit = 50
+    if len(rows) > limit:
+        warnings.append(f"Showing the latest {limit} of {len(rows)}. Narrow with `category` or `days`.")
+    return ToolResult(
+        data={
+            "symbol": nse_symbol,
+            "category": category,
+            "days": days,
+            "total_announcements_fetched": total,
+            "matches": len(rows),
+            "announcements": rows[:limit],
+        },
+        warnings=warnings,
+        meta=meta,
+    )
+
+
+async def get_credit_ratings(symbol: str, days: int = 730) -> ToolResult:
     """
     Credit rating actions (CRISIL/ICRA/CARE/India Ratings) for a company —
     a governance/debt-quality check for long-term holders.
 
-    symbol: NSE trading symbol (e.g., "TCS", "RELIANCE")
     days: look back this many days (default 730 — rating actions are infrequent,
           often just 1-2 per year, so a short window usually finds nothing)
     """
-    result = await get_company_announcements(symbol, category="credit_rating", days=days)
-    if "No credit_rating announcements found" in result:
-        return (
-            f"**No credit rating actions found for {symbol.upper()} in the last {days} days.**\n\n"
-            f"This can mean the company has no rated debt (common for well-capitalized, "
-            f"low-debt businesses), or the rating agency filing didn't use standard wording. "
-            f"Check `get_company_announcements('{symbol}', category='all', days={days})` "
-            f"for anything mentioning CRISIL/ICRA/CARE manually."
+    nse_symbol, rows, total, warnings, meta = await _fetch_filtered(symbol, "credit_rating", days)
+    if not rows:
+        warnings.append(
+            f"No credit rating actions found for {nse_symbol} in the last {days} days. This can mean "
+            "the company has no rated debt (common for low-debt businesses), or the filing didn't use "
+            "standard wording — check get_company_announcements(category='all') for CRISIL/ICRA/CARE mentions."
         )
-    return result.replace("# Company Announcements", "# Credit Rating Actions")
+    return ToolResult(
+        data={"symbol": nse_symbol, "days": days, "rating_actions": rows[:50],
+              "total_announcements_fetched": total},
+        warnings=warnings,
+        meta=meta,
+    )

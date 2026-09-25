@@ -495,7 +495,7 @@ Then point the client at `http://<host>:8000/mcp`.
 - Screener.in rate-limits bursts; the client caps concurrency (`SCREENER_MAX_CONCURRENCY`, default 4) and retries 429s with backoff, so large technical screens take ~15–60s
 - Document analysis requires machine-readable PDFs (scanned/image-only PDFs may fail)
 - NSE bulk deals only capture single trades > 0.5% of equity
-- `get_company_announcements` and `search_shareholder` depend on NSE's public API, which frequently rate-limits or blocks server IPs (403/404 responses) — if a query returns "no data found", it may be NSE blocking the request rather than an empty result
+- The NSE-backed tools (`get_company_announcements`, `get_credit_ratings`, `get_insider_trading`, `get_bulk_deals`, `search_shareholder`) depend on NSE's public API, which often rate-limits or blocks server IPs. When that happens the tool returns `status: "error"` with `error.type: "upstream_unavailable"`. When only some bulk-deal days fail, it returns `partial`. An empty list with `status: "ok"` means NSE really had no rows. These tools resolve fuzzy symbols the same way as the Screener tools, and they return a `not_on_nse` error for companies listed only on BSE.
 - This is a research tool — not financial advice
 
 ---

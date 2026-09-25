@@ -371,3 +371,40 @@ async def fetch_company_page(symbol: str, financial_type: str = "consolidated") 
         warnings=warnings,
         interpreted_as=interpreted_as,
     )
+
+
+async def resolve_nse_symbol(symbol: str) -> tuple[str, list[str], dict]:
+    """Canonical NSE trading symbol for free-form input → (nse_symbol, warnings, meta).
+
+    NSE's APIs only accept exact trading symbols and answer anything else with
+    an empty list — which used to read as "no announcements". Resolving through
+    the Screener page gives fuzzy matching and the company's real NSE code.
+    If Screener itself is unreachable, fall back to the input as given (with a
+    warning) rather than failing an NSE lookup that might still work.
+    """
+    from ..parsers.company import parse_overview
+
+    sym = normalize_symbol(symbol)
+    if not sym:
+        raise ToolError("Please provide an NSE symbol or company name.", "invalid_input")
+    try:
+        page = await fetch_company_page(symbol, "standalone")
+    except ToolError:
+        raise
+    except Exception as e:
+        return sym, [
+            f"Couldn't verify '{symbol}' against Screener.in ({type(e).__name__}) — querying NSE with it as given."
+        ], {"symbol": sym}
+
+    nse_code = (parse_overview(page.html).get("nse_code") or "").upper()
+    if not nse_code:
+        raise ToolError(
+            f"{page.symbol} has no NSE listing (BSE-only), so NSE announcements, bulk deals "
+            "and insider disclosures aren't available for it.",
+            "not_on_nse",
+            symbol=page.symbol,
+        )
+    meta = {"symbol": nse_code}
+    if page.interpreted_as or nse_code != sym:
+        meta.update({"requested_symbol": symbol, "interpreted_as": nse_code})
+    return nse_code, list(page.warnings), meta

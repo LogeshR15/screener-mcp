@@ -8,6 +8,8 @@ import re
 
 import httpx
 
+from ..core.envelope import ToolError, ToolResult
+
 logger = logging.getLogger(__name__)
 
 _COMMODITY_INFO: dict[str, dict] = {
@@ -162,10 +164,10 @@ async def get_commodity_prices(commodity: str, years: int = 5) -> str:
 
     if key not in _COMMODITY_INFO:
         available = ", ".join(sorted(_COMMODITY_INFO.keys()))
-        return (
-            f"**Unknown commodity: '{commodity}'**\n\n"
-            f"Supported commodities:\n  {available}\n\n"
-            f"Example: `get_commodity_prices('crude_oil')` or `get_commodity_prices('gold')`"
+        raise ToolError(
+            f"Unknown commodity: '{commodity}'. Supported: {available}. "
+            "Example: get_commodity_prices('crude_oil')",
+            "invalid_input",
         )
 
     info = _COMMODITY_INFO[key]
@@ -222,4 +224,11 @@ async def get_commodity_prices(commodity: str, years: int = 5) -> str:
         "use MCX/NCDEX directly. Screener.in's commodity data covers 10,000+ commodities (premium feature).",
     ]
 
-    return "\n".join(lines)
+    return ToolResult(
+        data={"report": "\n".join(lines), "mcx_price": current_price or None},
+        missing_fields=[] if current_price else ["mcx_price"],
+        reason=None if current_price else (
+            "Live MCX price couldn't be fetched (best-effort source) — the analysis below is "
+            "context only; check MCX directly for the current price."
+        ),
+    )
