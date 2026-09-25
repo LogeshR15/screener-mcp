@@ -11,6 +11,7 @@ Authentication flow:
 import os
 import asyncio
 import logging
+import random
 from typing import Optional
 from urllib.parse import urljoin
 
@@ -28,12 +29,44 @@ DEFAULT_HEADERS = {
 }
 
 
+# Screener.in answers bursts with 429 Too Many Requests. Cap concurrent
+# requests and retry 429/503 with backoff so fan-out tools (technical screens,
+# comparisons) degrade into "slower" instead of "half the rows failed".
+_MAX_CONCURRENCY = int(os.getenv("SCREENER_MAX_CONCURRENCY", "4"))
+_MAX_RETRIES = 4
+
+
 class ScreenerClient:
     def __init__(self):
         self._client: Optional[httpx.AsyncClient] = None
         self._csrf_token: Optional[str] = None
         self._logged_in = False
         self._lock = asyncio.Lock()
+        self._semaphore = asyncio.Semaphore(_MAX_CONCURRENCY)
+
+    @property
+    def logged_in(self) -> bool:
+        return self._logged_in
+
+    async def _get(self, url: str, **kwargs) -> httpx.Response:
+        """GET with bounded concurrency and 429/503 retry-with-backoff."""
+        await self._ensure_client()
+        for attempt in range(_MAX_RETRIES + 1):
+            try:
+                async with self._semaphore:
+                    resp = await self._client.get(url, **kwargs)
+            except (httpx.ConnectError, httpx.ProxyError, httpx.RemoteProtocolError, httpx.ReadError):
+                # transient transport failures — retry, then let the caller see it
+                if attempt == _MAX_RETRIES:
+                    raise
+                await asyncio.sleep(2 ** attempt + random.uniform(0, 0.5))
+                continue
+            if resp.status_code not in (429, 503) or attempt == _MAX_RETRIES:
+                return resp
+            retry_after = resp.headers.get("Retry-After", "")
+            delay = float(retry_after) if retry_after.isdigit() else 2 ** attempt
+            await asyncio.sleep(min(delay, 30) + random.uniform(0, 0.5))
+        return resp
 
     async def _ensure_client(self):
         if self._client is None:
@@ -91,9 +124,8 @@ class ScreenerClient:
 
     async def get_html(self, path: str, params: Optional[dict] = None) -> str:
         """Fetch an HTML page from Screener.in."""
-        await self._ensure_client()
         url = urljoin(BASE_URL, path)
-        resp = await self._client.get(url, params=params or {})
+        resp = await self._get(url, params=params or {})
         resp.raise_for_status()
         # Detect silent redirect to login/register page
         final_url = str(resp.url)
@@ -106,9 +138,8 @@ class ScreenerClient:
 
     async def get_json(self, path: str, params: Optional[dict] = None) -> dict | list:
         """Fetch a JSON endpoint from Screener.in."""
-        await self._ensure_client()
         url = urljoin(BASE_URL, path)
-        resp = await self._client.get(
+        resp = await self._get(
             url,
             params=params or {},
             headers={**DEFAULT_HEADERS, "Accept": "application/json, text/javascript, */*; q=0.01",

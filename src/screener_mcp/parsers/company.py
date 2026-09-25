@@ -120,12 +120,16 @@ def parse_overview(html: str) -> dict[str, Any]:
             if code:
                 nse = code
 
-    # About text
-    about_tag = soup.find(id="about")
+    # About text — Screener renders it in a `div.about` box (older layouts
+    # used an #about id); strip the footnote-link superscripts.
+    about_tag = soup.find(id="about") or soup.find("div", class_="about")
     about = ""
     if about_tag:
         p = about_tag.find("p")
-        about = _clean(p.get_text()) if p else ""
+        if p:
+            for sup in p.find_all("sup"):
+                sup.decompose()
+            about = _clean(p.get_text())
 
     # Sector / industry from market breadcrumb links (Screener renders these in
     # the peer-comparison section as <a href="/market/…" title="Sector|Industry">)

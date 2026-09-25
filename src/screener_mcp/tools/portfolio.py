@@ -11,7 +11,7 @@ import logging
 from pathlib import Path
 from typing import Optional
 
-from ..client import get_client
+from ..core.company_page import fetch_company_page
 from ..parsers.company import parse_overview
 
 logger = logging.getLogger(__name__)
@@ -46,9 +46,8 @@ def _parse_num(value) -> Optional[float]:
 
 async def _live_price(symbol: str) -> Optional[float]:
     try:
-        client = await get_client()
-        html = await client.get_html(f"/company/{symbol.upper()}/consolidated/")
-        overview = parse_overview(html)
+        page = await fetch_company_page(symbol, "consolidated")
+        overview = parse_overview(page.html)
         return _parse_num(overview.get("current_price"))
     except Exception as e:
         logger.warning(f"Failed to fetch live price for {symbol}: {e}")

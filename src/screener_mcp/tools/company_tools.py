@@ -4,9 +4,21 @@ They fetch the Screener.in page, parse it, and return formatted text
 that Claude can read naturally.
 """
 
+import asyncio
 from typing import Literal
 
 from ..client import get_client
+from ..core.company_page import CompanyPage, fetch_company_page, search_candidates
+from ..core.envelope import ToolError, ToolResult
+from ..core.numbers import blank_to_none, to_number
+from ..core.quality import (
+    OVERVIEW_CORE_FIELDS,
+    annotate_rows,
+    check_ratio_history,
+    explain_missing,
+    overview_field,
+    overview_missing_fields,
+)
 from ..parsers.company import (
     parse_overview,
     parse_profit_loss,
@@ -19,79 +31,78 @@ from ..parsers.company import (
     parse_peers_ajax,
     parse_warehouse_id,
 )
-from ..parsers.screener import parse_search_results
 
 
 FinancialType = Literal["consolidated", "standalone"]
 
 
-def _fmt_yearly(data: dict, title: str, n_years: int = 5) -> str:
-    """Format a yearly financial table into readable text."""
-    years = data.get("years", [])[-n_years:]
-    rows = data.get("rows", [])
-    if not years or not rows:
-        return f"No {title} data available."
-
-    lines = [f"### {title}", "", f"{'Metric':<35} " + "  ".join(f"{y:>10}" for y in years)]
-    lines.append("-" * (35 + 13 * len(years)))
-
-    for row in rows:
-        label = row.get("label", "")
-        values = row.get("values", [])[-n_years:]
-        values_padded = values + [""] * (len(years) - len(values))
-        lines.append(f"{label:<35} " + "  ".join(f"{v:>10}" for v in values_padded))
-
-    return "\n".join(lines)
+def page_result(page: CompanyPage, data, warnings=None, missing=None, reason=None) -> ToolResult:
+    """ToolResult carrying the page's resolution/fallback notes and meta."""
+    return ToolResult(
+        data=data,
+        warnings=page.warnings + list(warnings or []),
+        missing_fields=list(missing or []),
+        reason=reason,
+        meta=page.meta,
+    )
 
 
-async def search_company(query: str) -> str:
+def overview_data(page: CompanyPage, ov: dict) -> tuple[dict, list[str], str | None]:
+    """Clean overview dict (numbers, None for blanks) + missing fields + reason."""
+    missing = overview_missing_fields(ov)
+    reason = explain_missing(missing, len(missing) == len(OVERVIEW_CORE_FIELDS)) if missing else None
+
+    price = to_number(overview_field(ov, "current_price"))
+    high = to_number(overview_field(ov, "52_week_high"))
+    low = to_number(overview_field(ov, "52_week_low"))
+    data = {
+        "symbol": page.symbol,
+        "name": ov.get("name"),
+        "nse_code": blank_to_none(ov.get("nse_code")),
+        "bse_code": blank_to_none(ov.get("bse_code")),
+        "sectors": ov.get("sectors", []),
+        "financial_type": page.financial_type,
+        "current_price": price,
+        "52_week_high": high,
+        "52_week_low": low,
+        "pct_above_52w_low": round((price / low - 1) * 100, 2) if price and low else None,
+        "pct_below_52w_high": round((1 - price / high) * 100, 2) if price and high else None,
+        "key_ratios": {
+            k: (to_number(v) if to_number(v) is not None else blank_to_none(v))
+            for k, v in ov.get("key_ratios", {}).items()
+        },
+        "units": {"market_cap": "₹ Cr", "prices": "₹", "ratios": "% where applicable"},
+    }
+    return data, missing, reason
+
+
+async def search_company(query: str) -> ToolResult:
     """Search for a company by name or NSE/BSE symbol."""
-    client = await get_client()
-    results = await client.get_json("/api/company/search/", params={"q": query})
-    parsed = parse_search_results(results if isinstance(results, list) else [])
-
-    if not parsed:
-        return f"No companies found matching '{query}'. Try the full company name or stock symbol."
-
-    lines = [f"Found {len(parsed)} result(s) for '{query}':", ""]
-    for i, r in enumerate(parsed[:10], 1):
-        lines.append(f"{i}. **{r['name']}** — symbol: `{r['screener_id']}`")
-
-    lines.append("\nUse the symbol (e.g. `TCS`, `INFY`) with other tools to get detailed data.")
-    return "\n".join(lines)
-
-
-async def get_company_overview(symbol: str, financial_type: FinancialType = "consolidated") -> str:
-    """Get a comprehensive overview of a company."""
-    client = await get_client()
-    path = f"/company/{symbol.upper()}/"
-    if financial_type == "consolidated":
-        path += "consolidated/"
-    html = await client.get_html(path)
-    data = parse_overview(html)
-
-    ratios = data.get("key_ratios", {})
-    sectors = ", ".join(data.get("sectors", [])) or "—"
-
-    def r(key):
-        return ratios.get(key, "—")
-
-    lines = [
-        f"# {data['name']}",
-        f"**NSE**: {data.get('nse_code') or '—'}  |  **BSE**: {data.get('bse_code') or '—'}  |  **Sector**: {sectors}",
-        f"**Current Price**: {data.get('current_price') or '—'}  |  **52W High**: {data.get('52_week_high') or '—'}  |  **52W Low**: {data.get('52_week_low') or '—'}",
-        "",
-        "## Key Metrics",
-        "| Metric | Value |",
-        "|--------|-------|",
+    candidates = await search_candidates(query)
+    results = [
+        {
+            "symbol": c.symbol,
+            "name": c.name,
+            "screener_id": c.company_id,
+            "has_consolidated_financials": c.has_consolidated,
+        }
+        for c in candidates[:10]
     ]
-    for k, v in ratios.items():
-        lines.append(f"| {k} | {v} |")
+    warnings = []
+    if not results:
+        warnings.append(
+            f"No companies found matching '{query}'. Try the full company name or stock symbol."
+        )
+    return ToolResult(data={"query": query, "results": results}, warnings=warnings)
 
-    if data.get("about"):
-        lines += ["", "## About", data["about"]]
 
-    return "\n".join(lines)
+async def get_company_overview(symbol: str, financial_type: FinancialType = "consolidated") -> ToolResult:
+    """Get a comprehensive overview of a company."""
+    page = await fetch_company_page(symbol, financial_type)
+    ov = parse_overview(page.html)
+    data, missing, reason = overview_data(page, ov)
+    data["about"] = blank_to_none(ov.get("about"))
+    return page_result(page, data, missing=missing, reason=reason)
 
 
 async def get_financials(
@@ -99,12 +110,8 @@ async def get_financials(
     statement: Literal["profit_loss", "balance_sheet", "cash_flow", "ratios"] = "profit_loss",
     financial_type: FinancialType = "consolidated",
     years: int = 5,
-) -> str:
-    client = await get_client()
-    path = f"/company/{symbol.upper()}/"
-    if financial_type == "consolidated":
-        path += "consolidated/"
-    html = await client.get_html(path)
+) -> ToolResult:
+    page = await fetch_company_page(symbol, financial_type)
 
     parsers = {
         "profit_loss": (parse_profit_loss, "Profit & Loss (₹ Crore)"),
@@ -113,25 +120,61 @@ async def get_financials(
         "ratios": (parse_ratios, "Key Ratios History"),
     }
     fn, title = parsers[statement]
-    data = fn(html)
-    return _fmt_yearly(data, f"{symbol.upper()} — {title} [{financial_type}]", years)
+    table = fn(page.html)
+    years = max(1, min(int(years or 5), 12))
+
+    all_years = table.get("years", [])
+    shown_years = all_years[-years:]
+    rows = [{"label": r.get("label", ""), "values": r.get("values", [])[-years:]} for r in table.get("rows", [])]
+
+    data = {
+        "symbol": page.symbol,
+        "statement": statement,
+        "title": title,
+        "financial_type": page.financial_type,
+        "years": shown_years,
+        "rows": rows,
+    }
+
+    has_values = any(v for r in rows for v in r["values"])
+    if not shown_years or not rows or not has_values:
+        return page_result(
+            page, data,
+            missing=[statement],
+            reason=f"Source page returned no {title} data for {page.symbol} [{page.financial_type}].",
+        )
+
+    warnings = []
+    if statement == "ratios":
+        flags = check_ratio_history(shown_years, rows)
+        data["rows"] = annotate_rows(shown_years, rows, flags)
+        n = sum(len(f) for f in flags.values())
+        if n:
+            data["data_quality_flags"] = n
+            warnings.append(
+                f"{n} ratio value(s) fall outside plausible ranges or are internally "
+                "inconsistent — marked data_quality_flag: true. Treat them as suspect "
+                "(likely filing/parse artifacts), not as real business metrics."
+            )
+    return page_result(page, data, warnings=warnings)
 
 
-async def get_quarterly_results(symbol: str, financial_type: FinancialType = "consolidated") -> str:
-    client = await get_client()
-    path = f"/company/{symbol.upper()}/"
-    if financial_type == "consolidated":
-        path += "consolidated/"
-    html = await client.get_html(path)
-    data = parse_quarterly_results(html)
+async def get_quarterly_results(symbol: str, financial_type: FinancialType = "consolidated") -> ToolResult:
+    page = await fetch_company_page(symbol, financial_type)
+    symbol, financial_type = page.symbol, page.financial_type
+    data = parse_quarterly_results(page.html)
 
     years = data.get("years", [])[-8:]
     rows = data.get("rows", [])
-    if not years or not rows:
-        return f"No quarterly results available for {symbol.upper()}."
+    if not years or not rows or not any(v for r in rows for v in r.get("values", [])):
+        return page_result(
+            page, {"report": f"No quarterly results available for {symbol}."},
+            missing=["quarterly_results"],
+            reason=f"Source page returned no quarterly results for {symbol} [{financial_type}].",
+        )
 
     lines = [
-        f"## {symbol.upper()} — Quarterly Results (₹ Crore) [{financial_type}]",
+        f"## {symbol} — Quarterly Results (₹ Crore) [{financial_type}]",
         "",
         f"{'Metric':<30} " + "  ".join(f"{y:>12}" for y in years),
         "-" * (30 + 15 * len(years)),
@@ -144,22 +187,25 @@ async def get_quarterly_results(symbol: str, financial_type: FinancialType = "co
         values = values + [""] * (len(years) - len(values))
         lines.append(f"{label:<30} " + "  ".join(f"{v:>12}" for v in values))
 
-    return "\n".join(lines)
+    return page_result(page, {"report": "\n".join(lines)})
 
 
-async def get_shareholding(symbol: str) -> str:
-    client = await get_client()
-    path = f"/company/{symbol.upper()}/"
-    html = await client.get_html(path)
-    data = parse_shareholding(html)
+async def get_shareholding(symbol: str) -> ToolResult:
+    page = await fetch_company_page(symbol, "standalone")
+    symbol = page.symbol
+    data = parse_shareholding(page.html)
 
     quarters = data.get("quarters", [])[-8:]
     rows = data.get("rows", [])
     if not quarters or not rows:
-        return f"No shareholding data found for {symbol.upper()}."
+        return page_result(
+            page, {"report": f"No shareholding data found for {symbol}."},
+            missing=["shareholding"],
+            reason=f"Source page returned no shareholding table for {symbol}.",
+        )
 
     lines = [
-        f"## {symbol.upper()} — Shareholding Pattern (%)",
+        f"## {symbol} — Shareholding Pattern (%)",
         "",
         f"{'Category':<25} " + "  ".join(f"{q:>10}" for q in quarters),
         "-" * (25 + 13 * len(quarters)),
@@ -188,40 +234,43 @@ async def get_shareholding(symbol: str) -> str:
         except (ValueError, IndexError):
             pass
 
-    return "\n".join(lines)
+    return page_result(page, {"report": "\n".join(lines)})
 
 
-async def get_promoter_pledge_history(symbol: str) -> str:
+async def get_promoter_pledge_history(symbol: str) -> ToolResult:
     """Dedicated view of promoter pledge % trend, pulled out of the shareholding table."""
-    client = await get_client()
-    path = f"/company/{symbol.upper()}/"
-    html = await client.get_html(path)
-    data = parse_shareholding(html)
+    page = await fetch_company_page(symbol, "standalone")
+    symbol = page.symbol
+    data = parse_shareholding(page.html)
 
     quarters = data.get("quarters", [])
     rows = data.get("rows", [])
     if not quarters or not rows:
-        return f"No shareholding data found for {symbol.upper()}."
+        return page_result(
+            page, {"report": f"No shareholding data found for {symbol}."},
+            missing=["shareholding"],
+            reason=f"Source page returned no shareholding table for {symbol}.",
+        )
 
     pledge_row = next(
         (r for r in rows if "pledge" in r.get("category", "").lower()), None
     )
 
     if not pledge_row:
-        return (
-            f"## {symbol.upper()} — Promoter Pledge\n\n"
+        return page_result(page, {"pledge_row_found": False, "report": (
+            f"## {symbol} — Promoter Pledge\n\n"
             "No dedicated pledge row found in Screener.in's shareholding table for this company.\n\n"
             "This usually means **promoter shares are not pledged** — Screener only shows the "
             "line when pledging exists. To be certain, cross-check the 'Pledged percentage' "
             "field via `screen_stocks(\"Pledged percentage > 0\")` filtered to this symbol, or "
             "the company's own shareholding pattern (SAST) filings."
-        )
+        )})
 
     vals = pledge_row.get("values", [])[-len(quarters):]
     vals_padded = vals + [""] * (len(quarters) - len(vals))
 
     lines = [
-        f"## {symbol.upper()} — Promoter Pledge History (%)",
+        f"## {symbol} — Promoter Pledge History (%)",
         "",
         f"{'Quarter':<12} " + "  ".join(f"{q:>10}" for q in quarters),
         f"{'Pledged %':<12} " + "  ".join(f"{v:>10}" for v in vals_padded),
@@ -252,15 +301,13 @@ async def get_promoter_pledge_history(symbol: str) -> str:
         )
         lines += ["", f"**Latest pledge**: {latest:.1f}% — {severity}", f"**Trend**: {trend}"]
 
-    return "\n".join(lines)
+    return page_result(page, {"pledge_row_found": True, "report": "\n".join(lines)})
 
 
-async def get_peers(symbol: str, financial_type: FinancialType = "consolidated") -> str:
+async def get_peers(symbol: str, financial_type: FinancialType = "consolidated") -> ToolResult:
     client = await get_client()
-    path = f"/company/{symbol.upper()}/"
-    if financial_type == "consolidated":
-        path += "consolidated/"
-    html = await client.get_html(path)
+    page = await fetch_company_page(symbol, financial_type)
+    symbol, html = page.symbol, page.html
 
     # Screener.in's real peer table is loaded client-side via an AJAX call
     # keyed on the company's "warehouse id" (distinct from its numeric id):
@@ -276,72 +323,83 @@ async def get_peers(symbol: str, financial_type: FinancialType = "consolidated")
         peers = parse_peers(html)
 
     if not peers:
-        return (
-            f"No peer data found for {symbol.upper()}. "
-            "Screener.in loads the peer table via AJAX — it is not present in the initial HTML. "
-            "Use `compare_companies([\"SYMBOL1\", \"SYMBOL2\"])` to compare specific companies side-by-side."
+        return page_result(
+            page,
+            {"report": f"No peer data found for {symbol}. Use `compare_companies([\"SYMBOL1\", \"SYMBOL2\"])` to compare specific companies side-by-side."},
+            missing=["peers"],
+            reason="Screener.in's peer-comparison endpoint returned no rows.",
         )
 
     # Check if we only got sector breadcrumb context (no actual peer rows)
     if peers[0].get("_note"):
-        lines = [f"## {symbol.upper()} — Peer Comparison", "", peers[0]["_note"], ""]
+        lines = [f"## {symbol} — Peer Comparison", "", peers[0]["_note"], ""]
         sector_rows = [p for p in peers[1:] if "Sector Level" in p]
         for r in sector_rows:
             lines.append(f"  {r['Sector Level']}: {r['Name']}")
         lines.append(
             "\nTo compare peers manually, use `compare_companies([\"SYMBOL1\", \"SYMBOL2\", ...])`."
         )
-        return "\n".join(lines)
+        return page_result(
+            page, {"report": "\n".join(lines)},
+            missing=["peers"],
+            reason="Peer table unavailable — only sector context could be extracted.",
+        )
 
     columns = [c for c in peers[0].keys() if not c.startswith("_")]
     col_widths = {c: max(len(c), max(len(str(r.get(c, ""))) for r in peers)) for c in columns}
 
     header = "  ".join(f"{c:{col_widths[c]}}" for c in columns)
     separator = "  ".join("-" * col_widths[c] for c in columns)
-    lines = [f"## {symbol.upper()} — Peer Comparison", "", header, separator]
+    lines = [f"## {symbol} — Peer Comparison", "", header, separator]
 
     for row in peers:
         lines.append("  ".join(f"{str(row.get(c, '')):{col_widths[c]}}" for c in columns))
 
-    return "\n".join(lines)
+    return page_result(page, {"report": "\n".join(lines)})
 
 
-async def compare_companies(symbols: list[str], financial_type: FinancialType = "consolidated") -> str:
+async def compare_companies(symbols: list[str], financial_type: FinancialType = "consolidated") -> ToolResult:
     """Side-by-side comparison of 2-5 companies."""
-    import asyncio
-
     if len(symbols) < 2:
-        return "Please provide at least 2 company symbols to compare."
+        raise ToolError("Please provide at least 2 company symbols to compare.", "invalid_input")
+    warnings = []
     if len(symbols) > 5:
+        warnings.append(f"Only the first 5 of {len(symbols)} symbols were compared.")
         symbols = symbols[:5]
 
-    client = await get_client()
-
     async def fetch(sym: str):
-        path = f"/company/{sym.upper()}/"
-        if financial_type == "consolidated":
-            path += "consolidated/"
-        html = await client.get_html(path)
-        return sym.upper(), parse_overview(html)
+        page = await fetch_company_page(sym, financial_type)
+        return page, parse_overview(page.html)
 
     results = await asyncio.gather(*[fetch(s) for s in symbols], return_exceptions=True)
 
     companies = []
     failed = []
-    for sym, r in zip([s.upper() for s in symbols], results):
+    missing_all = []
+    for requested, r in zip(symbols, results):
         if isinstance(r, Exception):
-            failed.append(sym)
-        else:
-            companies.append(r)
+            entry = {"requested_symbol": requested, "error": str(r)}
+            if isinstance(r, ToolError) and r.details.get("candidates"):
+                entry["candidates"] = r.details["candidates"]
+            failed.append(entry)
+            continue
+        page, ov = r
+        warnings += page.warnings
+        missing = overview_missing_fields(ov)
+        if missing:
+            warnings.append(f"{page.symbol}: no value on source page for {', '.join(missing)}.")
+            missing_all += [f"{page.symbol}.{m}" for m in missing]
+        companies.append((page.symbol, ov))
 
     if not companies:
-        return "Could not fetch data for any of the requested companies. Check that the symbols are valid NSE/BSE codes."
-
-    warnings = []
-    if failed:
-        warnings.append(
-            f"⚠️  Could not fetch data for: {', '.join(failed)} — check these are valid NSE symbols."
+        raise ToolError(
+            "Could not fetch data for any of the requested companies.",
+            "symbol_not_found",
+            failed=failed,
         )
+    for f in failed:
+        hint = f" Candidates: {', '.join(c['symbol'] for c in f['candidates'])}." if f.get("candidates") else ""
+        warnings.append(f"Could not fetch {f['requested_symbol']}: {f['error']}{hint}")
 
     # Build comparison table
     metrics_order = [
@@ -367,14 +425,14 @@ async def compare_companies(symbols: list[str], financial_type: FinancialType = 
         for key in all_ratio_keys:
             if metric.lower() in key.lower() and key not in shown:
                 row = f"{key:<35} " + "  ".join(
-                    f"{data.get('key_ratios', {}).get(key, '—'):>15}" for _, data in companies
+                    f"{data.get('key_ratios', {}).get(key) or '—':>15}" for _, data in companies
                 )
                 lines.append(row)
                 shown.add(key)
 
     for key in sorted(all_ratio_keys - shown):
         row = f"{key:<35} " + "  ".join(
-            f"{data.get('key_ratios', {}).get(key, '—'):>15}" for _, data in companies
+            f"{data.get('key_ratios', {}).get(key) or '—':>15}" for _, data in companies
         )
         lines.append(row)
 
@@ -384,7 +442,10 @@ async def compare_companies(symbols: list[str], financial_type: FinancialType = 
         sectors = ", ".join(data.get("sectors", []))
         lines.append(f"- {sym}: {sectors or '—'}")
 
-    if warnings:
-        lines += ["", *warnings]
-
-    return "\n".join(lines)
+    return ToolResult(
+        data={"symbols": [sym for sym, _ in companies], "failed": failed, "report": "\n".join(lines)},
+        warnings=warnings,
+        missing_fields=missing_all,
+        partial=bool(failed or missing_all),
+        reason="Some companies could not be fetched or had blank fields." if (failed or missing_all) else None,
+    )

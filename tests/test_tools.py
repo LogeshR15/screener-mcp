@@ -36,6 +36,8 @@ EXPECTED_TOOLS = {
     "explain_for_beginners",
     # Stock screening
     "screen_stocks",
+    "get_52_week_low_candidates",
+    "compare_to_sector",
     "screen_by_theme",
     "list_investment_themes",
     # Document analysis (RAG)

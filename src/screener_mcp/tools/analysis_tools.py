@@ -3,14 +3,16 @@ Higher-level analysis tools — these fetch and combine multiple data sources
 to produce analyst-grade structured output for Claude to reason over.
 """
 
-from ..client import get_client
+from ..core.company_page import fetch_company_page
+from ..core.envelope import ToolResult
+from ..core.quality import check_ratio_history, explain_missing, overview_missing_fields, OVERVIEW_CORE_FIELDS
 from ..parsers.company import parse_full_page
 
 
 async def get_full_analysis(
     symbol: str,
     financial_type: str = "consolidated",
-) -> str:
+) -> ToolResult:
     """
     Fetch ALL financial data for a company in one call.
 
@@ -22,26 +24,23 @@ async def get_full_analysis(
 
     This is the primary tool for deep-dive analysis.
     """
-    client = await get_client()
-    path = f"/company/{symbol.upper()}/"
-    if financial_type == "consolidated":
-        path += "consolidated/"
-    html = await client.get_html(path)
-    data = parse_full_page(html)
+    page = await fetch_company_page(symbol, financial_type)
+    symbol, financial_type = page.symbol, page.financial_type
+    data = parse_full_page(page.html)
 
     sections = []
 
     # ── Overview ─────────────────────────────────────────────────────────────
     ov = data.get("overview", {})
-    sections.append(f"# {ov.get('name', symbol.upper())} — Full Analysis Data [{financial_type}]")
-    sections.append(f"Symbol: {symbol.upper()}")
+    sections.append(f"# {ov.get('name', symbol)} — Full Analysis Data [{financial_type}]")
+    sections.append(f"Symbol: {symbol}")
     sections.append(f"Sectors: {', '.join(ov.get('sectors', [])) or '—'}")
-    sections.append(f"Current Price: {ov.get('current_price', '—')}")
-    sections.append(f"52W High: {ov.get('52_week_high', '—')} | 52W Low: {ov.get('52_week_low', '—')}")
+    sections.append(f"Current Price: {ov.get('current_price') or '— (not on source page)'}")
+    sections.append(f"52W High: {ov.get('52_week_high') or '—'} | 52W Low: {ov.get('52_week_low') or '—'}")
     sections.append("")
     sections.append("## Key Ratios")
     for k, v in ov.get("key_ratios", {}).items():
-        sections.append(f"  {k}: {v}")
+        sections.append(f"  {k}: {v or '— (not on source page)'}")
     if ov.get("about"):
         sections.append("")
         sections.append(f"## About\n{ov['about']}")
@@ -70,6 +69,13 @@ async def get_full_analysis(
     rh = data.get("ratios_history", {})
     sections.append("")
     sections.append(_fmt_table("Key Ratios History", rh, n_years=10))
+    ratio_flags = check_ratio_history(rh.get("years", []), rh.get("rows", []))
+    if ratio_flags:
+        sections.append("")
+        sections.append("⚠ DATA QUALITY — these ratio values are implausible or internally inconsistent; treat as suspect:")
+        for label, flags in ratio_flags.items():
+            for f in flags:
+                sections.append(f"  {label} [{f['period']}] = {f['raw']}: {f['reason']}")
 
     # ── Shareholding ──────────────────────────────────────────────────────────
     sh = data.get("shareholding", {})
@@ -81,10 +87,29 @@ async def get_full_analysis(
     sections.append("")
     sections.append(_fmt_peers(peers))
 
-    return "\n".join(sections)
+    warnings = list(page.warnings)
+    missing = overview_missing_fields(ov)
+    for key, label in (("profit_loss", "profit & loss"), ("balance_sheet", "balance sheet"),
+                       ("cash_flow", "cash flow"), ("quarterly_results", "quarterly results")):
+        table = data.get(key, {})
+        if not any(v for r in table.get("rows", []) for v in r.get("values", [])):
+            missing.append(key)
+    n_flags = sum(len(f) for f in ratio_flags.values())
+    if n_flags:
+        warnings.append(f"{n_flags} ratio-history value(s) flagged as implausible (see DATA QUALITY section).")
+    reason = None
+    if missing:
+        reason = explain_missing(missing, all(m in missing for m in OVERVIEW_CORE_FIELDS))
+    return ToolResult(
+        data={"report": "\n".join(sections), "data_quality_flags": ratio_flags or None},
+        warnings=warnings,
+        missing_fields=missing,
+        reason=reason,
+        meta=page.meta,
+    )
 
 
-async def get_red_flags(symbol: str, financial_type: str = "consolidated") -> str:
+async def get_red_flags(symbol: str, financial_type: str = "consolidated") -> ToolResult:
     """
     Fetch all company data and return a structured checklist of potential red flags.
 
@@ -97,7 +122,7 @@ async def get_red_flags(symbol: str, financial_type: str = "consolidated") -> st
       - Revenue growth without profit growth
       - Increasing inventory/debtor days
     """
-    full_data = await get_full_analysis(symbol, financial_type)
+    result = await get_full_analysis(symbol, financial_type)
 
     # Return the raw data with instructions for Claude
     # Claude will do the red flag reasoning on top of this
@@ -121,18 +146,17 @@ If no red flags on a metric, confirm it's clean.
 Format as a structured report with a summary verdict.
 ---
 """
-    return full_data + "\n" + instructions
+    result.data["report"] += "\n" + instructions
+    return result
 
 
-async def beginner_explainer(symbol: str) -> str:
+async def beginner_explainer(symbol: str) -> ToolResult:
     """
     Fetch company data and prepare it for a beginner-friendly explanation.
     Claude will translate numbers into plain language.
     """
-    client = await get_client()
-    path = f"/company/{symbol.upper()}/consolidated/"
-    html = await client.get_html(path)
-    data = parse_full_page(html)
+    page = await fetch_company_page(symbol, "consolidated")
+    data = parse_full_page(page.html)
 
     ov = data.get("overview", {})
     ratios = ov.get("key_ratios", {})
@@ -144,12 +168,12 @@ async def beginner_explainer(symbol: str) -> str:
 {ov.get('about', 'No description available.')}
 
 **Sector**: {', '.join(ov.get('sectors', [])) or '—'}
-**Current Price**: {ov.get('current_price', '—')}
+**Current Price**: {ov.get('current_price') or '— (not on source page)'}
 
 **Key Numbers (explain each in simple language):**
 """
     for k, v in ratios.items():
-        instructions += f"  - {k}: {v}\n"
+        instructions += f"  - {k}: {v or '— (not on source page)'}\n"
 
     pl = data.get("profit_loss", {})
     if pl.get("years") and pl.get("rows"):
@@ -174,7 +198,14 @@ Use simple language, analogies, and avoid jargon. Cover:
 Keep it conversational, like explaining to a friend.
 ---
 """
-    return instructions
+    missing = overview_missing_fields(ov)
+    return ToolResult(
+        data={"report": instructions},
+        warnings=list(page.warnings),
+        missing_fields=missing,
+        reason=explain_missing(missing, len(missing) == len(OVERVIEW_CORE_FIELDS)) if missing else None,
+        meta=page.meta,
+    )
 
 
 # ─── formatting helpers ────────────────────────────────────────────────────────

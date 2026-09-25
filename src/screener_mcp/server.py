@@ -1,7 +1,7 @@
 """
 Screener.in MCP Server — Indian Stock Research Assistant
 
-Tools exposed to Claude (31 total):
+Tools exposed to Claude (33 total):
   search_company              — find a company by name or symbol
   get_company_overview        — key ratios, about, price data
   get_financials              — P&L / Balance Sheet / Cash Flow / Ratios history
@@ -9,7 +9,9 @@ Tools exposed to Claude (31 total):
   get_shareholding_pattern    — promoter / FII / DII / public holding trend
   get_peer_comparison         — peer comparison table
   compare_companies           — side-by-side comparison of 2-5 companies
-  screen_stocks               — custom Screener.in query
+  screen_stocks               — Screener.in query + technical clauses (52W distance, RSI, DMA, volume)
+  get_52_week_low_candidates  — quality stocks near their 52-week low, in one call
+  compare_to_sector           — stock's move vs its sector index and Nifty 50
   screen_by_theme             — pre-built thematic screens
   list_investment_themes      — list available theme screens
   get_full_analysis           — ALL data for deep-dive reasoning
@@ -58,6 +60,7 @@ import os
 import re
 from pathlib import Path
 from mcp.server.fastmcp import FastMCP
+from .core.envelope import ToolError, ToolResult, error_envelope, to_envelope
 from .tools.company_tools import (
     search_company as _search_company,
     get_company_overview as _get_overview,
@@ -72,6 +75,10 @@ from .tools.screening_tools import (
     screen_stocks as _screen,
     screen_by_theme as _theme,
     list_themes as _list_themes,
+)
+from .tools.technical_tools import (
+    get_52_week_low_candidates as _get_52w_low,
+    compare_to_sector as _compare_to_sector,
 )
 from .tools.analysis_tools import (
     get_full_analysis as _full_analysis,
@@ -104,23 +111,38 @@ from .tools.portfolio import (
 )
 
 def _safe(result):
-    """Wrap a coroutine so network/auth errors become readable messages."""
+    """Wrap a tool implementation so it always returns the standard envelope
+    (see core/envelope.py) and network/auth errors become structured errors."""
     import functools
     async def wrapper(*args, **kwargs):
         try:
-            return await result(*args, **kwargs)
+            return to_envelope(await result(*args, **kwargs))
+        except ToolError as e:
+            return error_envelope(e.message, e.error_type, **e.details)
         except PermissionError as e:
-            return f"**Login required.** {e}\n\nSet `SCREENER_USERNAME` and `SCREENER_PASSWORD` env vars, then restart the server."
+            return error_envelope(
+                f"Login required. {e} Set SCREENER_USERNAME and SCREENER_PASSWORD env vars, then restart the server.",
+                "login_required",
+            )
         except httpx.TimeoutException:
-            return "**Request timed out.** Screener.in is taking too long to respond — try again in a moment."
+            return error_envelope("Request timed out — Screener.in is taking too long to respond. Try again in a moment.", "timeout")
         except httpx.HTTPStatusError as e:
-            if e.response.status_code == 404:
-                return "**Company not found.** Check the symbol and try `search_company()` to find the correct NSE/BSE code."
-            return f"**Screener.in returned an error** ({e.response.status_code}). The site may be down — try again shortly."
-        except httpx.NetworkError:
-            return "**Cannot reach Screener.in.** Check your internet connection and try again."
+            code = e.response.status_code
+            if code == 404:
+                return error_envelope("Not found. Check the symbol, or use search_company() to find the NSE/BSE code.", "not_found")
+            if code == 429:
+                return error_envelope("Screener.in is rate-limiting requests (HTTP 429). Wait a minute and retry, or narrow the request.", "rate_limited")
+            return error_envelope(f"Screener.in returned HTTP {code}. The site may be down — try again shortly.", "upstream_error", http_status=code)
+        except httpx.TransportError as e:
+            return error_envelope(f"Cannot reach the data source ({type(e).__name__}). Check your connection and try again.", "network_error")
+        except ImportError as e:
+            return error_envelope(str(e), "missing_dependency")
         except Exception as e:
-            return f"**Unexpected error**: {type(e).__name__}: {e}\n\nIf this persists, please open an issue at https://github.com/LogeshR15/screener-mcp/issues"
+            return error_envelope(
+                f"Unexpected error: {type(e).__name__}: {e}. If this persists, please open an issue at "
+                "https://github.com/LogeshR15/screener-mcp/issues",
+                "unexpected_error",
+            )
     functools.update_wrapper(wrapper, result)
     return wrapper
 
@@ -159,7 +181,7 @@ are broad, and you cannot predict stock prices.
 # ─── Search & Discovery ────────────────────────────────────────────────────────
 
 @mcp.tool(annotations={"title": "Search Company", "readOnlyHint": True, "openWorldHint": True})
-async def search_company(query: str) -> str:
+async def search_company(query: str) -> dict:
     """
     Search for an Indian stock/company by name or NSE/BSE symbol.
 
@@ -173,11 +195,19 @@ async def search_company(query: str) -> str:
 
 
 @mcp.tool(annotations={"title": "Screen Stocks", "readOnlyHint": True, "openWorldHint": True})
-async def screen_stocks(query: str, limit: int = 25) -> str:
+async def screen_stocks(
+    query: str,
+    limit: int = 25,
+    sort_by: str = "",
+    order: str = "desc",
+    universe: str = "",
+    max_candidates: int = 150,
+) -> dict:
     """
-    Run a custom stock screen using Screener.in query syntax.
+    Run a stock screen: Screener.in fundamental fields and/or technical
+    (price-action) clauses, combined with AND.
 
-    Query field names (exact spelling matters):
+    Fundamental fields (Screener.in syntax, exact spelling matters):
       Market Capitalization, Current Price, Price to Earning, Price to book value,
       Return on capital employed, Return on equity, Debt to equity,
       Sales growth 5Years, Sales growth 3Years, Sales growth last year,
@@ -186,18 +216,100 @@ async def screen_stocks(query: str, limit: int = 25) -> str:
       Average return on equity 5Years, Average return on capital employed 5Years,
       Current ratio, EV / EBITDA, PEG Ratio
 
-    Operators: > < = AND
+    Technical clauses (evaluated from daily price history):
+      52 week low distance < 10        — % above the 52-week low
+      52 week high distance > 30       — % below the 52-week high
+      RSI < 30                         — 14-day RSI
+      Price above 200 DMA              — also: below, 20/50/200 DMA, "50 DMA above 200 DMA"
+      Price vs 50 DMA < -5             — % above(+)/below(−) a DMA
+      Volume vs 20 day average > 2     — today's volume ÷ 20-day average (spike detection)
+
+    Operators: > < >= <= =, joined with AND. Technical clauses can't be mixed
+    with OR groups.
+
+    How it runs: fundamental clauses go to Screener.in (login required);
+    technical clauses are then checked against up to `max_candidates` of those
+    matches. With only technical clauses, candidates come from a public NSE
+    index — `universe` (default "nifty500"; also nifty50, midcap100,
+    smallcap100, smallcap250, bank, it, auto, pharma, fmcg, metal, realty,
+    energy, defence, chemicals, ...) — so no login is needed.
+
+    sort_by: a technical metric (rsi14, pct_above_52w_low, volume_vs_20d_avg, ...)
+             or a result column name. Default: the first technical filter.
 
     Examples:
       "Market Capitalization < 5000 AND Return on capital employed > 15 AND Debt to equity < 0.5"
-      "Profit growth 5Years > 20 AND Sales growth 5Years > 15 AND Debt to equity < 0.3"
-      "Dividend yield > 3 AND Debt to equity < 0.5 AND Return on equity > 15"
+      "Return on capital employed > 15 AND Debt to equity < 0.5 AND 52 week low distance < 10"
+      "RSI < 30 AND Price above 200 DMA"
+      "Volume vs 20 day average > 3 AND Price above 50 DMA"  (universe="midcap100")
+
+    Returns partial=true (with a reason) if only some candidates could be
+    checked — e.g. more fundamental matches than max_candidates.
     """
-    return await _safe(_screen)(query, limit=limit)
+    return await _safe(_screen)(
+        query, sort_by=sort_by, order=order, limit=limit,
+        universe=universe, max_candidates=max_candidates,
+    )
+
+
+@mcp.tool(annotations={"title": "52-Week-Low Candidates", "readOnlyHint": True, "openWorldHint": True})
+async def get_52_week_low_candidates(
+    min_roce: float = 15,
+    max_debt_to_equity: float = 0.5,
+    max_pct_above_52w_low: float = 10,
+    min_market_cap: float = 1000,
+    universe: str = "",
+    limit: int = 20,
+) -> dict:
+    """
+    Quality stocks trading near their 52-week low — in one call.
+
+    Combines quality filters (ROCE, debt-to-equity, market cap in ₹ Cr) with
+    proximity to the 52-week low, and returns for each match: current price,
+    52W high/low, % above the low, RSI/DMA context, and the same clean fields
+    as get_company_overview (P/E, ROCE, ROE, book value, dividend yield,
+    debt-to-equity).
+
+    With a Screener login and no `universe`, scans the whole market via a
+    Screener query. Otherwise scans an index's constituents (default Nifty
+    500) and computes debt-to-equity from each match's latest balance sheet.
+
+    Examples:
+      get_52_week_low_candidates()
+      get_52_week_low_candidates(min_roce=20, max_debt_to_equity=0.2, max_pct_above_52w_low=5)
+      get_52_week_low_candidates(universe="midcap100", min_market_cap=5000)
+    """
+    return await _safe(_get_52w_low)(
+        min_roce, max_debt_to_equity, max_pct_above_52w_low, min_market_cap, universe, limit,
+    )
+
+
+@mcp.tool(annotations={"title": "Compare To Sector", "readOnlyHint": True, "openWorldHint": True})
+async def compare_to_sector(symbol: str, days: int = 30, benchmark: str = "") -> dict:
+    """
+    Has this stock fallen (or risen) more or less than its sector and the
+    market? Separates a market/sector pullback from a company-specific move.
+
+    Compares the stock's close-to-close return against its sector index
+    (auto-picked from its Screener sector, e.g. Nifty Auto, Nifty IT, Nifty
+    India Defence) and the Nifty 50, over `days` calendar days plus 7/30/90-day
+    context windows. Also returns beta and correlation vs the sector, drawdown
+    from the window high, and a plain-language verdict.
+
+    symbol: NSE/BSE symbol
+    days: window in calendar days (5-365, default 30)
+    benchmark: optional index override — nifty50, nifty500, bank, it, auto,
+               pharma, fmcg, metal, realty, energy, defence, chemicals, ...
+
+    Examples:
+      compare_to_sector("MSUMI", days=60)
+      compare_to_sector("HDFCBANK", benchmark="private_bank")
+    """
+    return await _safe(_compare_to_sector)(symbol, days, benchmark)
 
 
 @mcp.tool(annotations={"title": "Screen By Theme", "readOnlyHint": True, "openWorldHint": True})
-async def screen_by_theme(theme: str, limit: int = 20) -> str:
+async def screen_by_theme(theme: str, limit: int = 20) -> dict:
     """
     Run a pre-built thematic stock screen.
 
@@ -227,7 +339,7 @@ async def screen_by_theme(theme: str, limit: int = 20) -> str:
 
 
 @mcp.tool(annotations={"title": "List Investment Themes", "readOnlyHint": True, "openWorldHint": False})
-async def list_investment_themes() -> str:
+async def list_investment_themes() -> dict:
     """
     List all available pre-built investment themes with their screening criteria.
     Use this to discover what thematic screens are available.
@@ -238,7 +350,7 @@ async def list_investment_themes() -> str:
 # ─── Company Deep Dive ─────────────────────────────────────────────────────────
 
 @mcp.tool(annotations={"title": "Get Company Overview", "readOnlyHint": True, "openWorldHint": True})
-async def get_company_overview(symbol: str, financial_type: str = "consolidated") -> str:
+async def get_company_overview(symbol: str, financial_type: str = "consolidated") -> dict:
     """
     Get a company's key ratios, current price, 52-week range, and about section.
 
@@ -256,7 +368,7 @@ async def get_financials(
     statement: str = "profit_loss",
     financial_type: str = "consolidated",
     years: int = 5,
-) -> str:
+) -> dict:
     """
     Get financial statements for a company.
 
@@ -271,12 +383,12 @@ async def get_financials(
     """
     valid = {"profit_loss", "balance_sheet", "cash_flow", "ratios"}
     if statement not in valid:
-        return f"Invalid statement type '{statement}'. Choose from: {', '.join(valid)}"
+        return error_envelope(f"Invalid statement type '{statement}'. Choose from: {', '.join(sorted(valid))}", "invalid_input")
     return await _safe(_get_financials)(symbol, statement, financial_type, years)
 
 
 @mcp.tool(annotations={"title": "Get Quarterly Results", "readOnlyHint": True, "openWorldHint": True})
-async def get_quarterly_results(symbol: str, financial_type: str = "consolidated") -> str:
+async def get_quarterly_results(symbol: str, financial_type: str = "consolidated") -> dict:
     """
     Get the last 8 quarters of results for a company.
 
@@ -289,7 +401,7 @@ async def get_quarterly_results(symbol: str, financial_type: str = "consolidated
 
 
 @mcp.tool(annotations={"title": "Get Shareholding Pattern", "readOnlyHint": True, "openWorldHint": True})
-async def get_shareholding_pattern(symbol: str) -> str:
+async def get_shareholding_pattern(symbol: str) -> dict:
     """
     Get shareholding pattern history for a company (last 8 quarters).
 
@@ -307,7 +419,7 @@ async def get_shareholding_pattern(symbol: str) -> str:
 
 
 @mcp.tool(annotations={"title": "Get Peer Comparison", "readOnlyHint": True, "openWorldHint": True})
-async def get_peer_comparison(symbol: str, financial_type: str = "consolidated") -> str:
+async def get_peer_comparison(symbol: str, financial_type: str = "consolidated") -> dict:
     """
     Get peer comparison table as shown on Screener.in for a company.
 
@@ -320,7 +432,7 @@ async def get_peer_comparison(symbol: str, financial_type: str = "consolidated")
 
 
 @mcp.tool(annotations={"title": "Compare Companies", "readOnlyHint": True, "openWorldHint": True})
-async def compare_companies(symbols: list[str], financial_type: str = "consolidated") -> str:
+async def compare_companies(symbols: list[str], financial_type: str = "consolidated") -> dict:
     """
     Side-by-side comparison of 2 to 5 companies on all key ratios.
 
@@ -341,7 +453,7 @@ async def compare_companies(symbols: list[str], financial_type: str = "consolida
 # ─── Analysis Tools ────────────────────────────────────────────────────────────
 
 @mcp.tool(annotations={"title": "Get Full Analysis", "readOnlyHint": True, "openWorldHint": True})
-async def get_full_analysis(symbol: str, financial_type: str = "consolidated") -> str:
+async def get_full_analysis(symbol: str, financial_type: str = "consolidated") -> dict:
     """
     Fetch ALL financial data for a company in a single call.
 
@@ -362,7 +474,7 @@ async def get_full_analysis(symbol: str, financial_type: str = "consolidated") -
 
 
 @mcp.tool(annotations={"title": "Analyze Red Flags", "readOnlyHint": True, "openWorldHint": True})
-async def analyze_red_flags(symbol: str, financial_type: str = "consolidated") -> str:
+async def analyze_red_flags(symbol: str, financial_type: str = "consolidated") -> dict:
     """
     Fetch all financial data for a company and generate a structured red flag analysis.
 
@@ -382,7 +494,7 @@ async def analyze_red_flags(symbol: str, financial_type: str = "consolidated") -
 
 
 @mcp.tool(annotations={"title": "Explain For Beginners", "readOnlyHint": True, "openWorldHint": True})
-async def explain_for_beginners(symbol: str) -> str:
+async def explain_for_beginners(symbol: str) -> dict:
     """
     Explain a company in simple, beginner-friendly language.
 
@@ -471,52 +583,72 @@ async def compare_stocks_ui(symbols: list[str] | str) -> dict:
 
     Note: use NSE trading symbols, not company names (e.g. "INFY" not "INFOSYS").
     """
+    return await _safe(_compare_stocks_ui_impl)(symbols)
+
+
+async def _compare_stocks_ui_impl(symbols: list[str] | str) -> ToolResult:
     import asyncio
-    from .client import get_client
+    from .core.company_page import fetch_company_page
+    from .core.quality import overview_missing_fields
     from .parsers.company import parse_overview
 
     if isinstance(symbols, str):
         symbols = symbols.split(",")
-    stock_list = [s.strip().upper() for s in symbols if s.strip()][:6]
-    client = await get_client()
+    stock_list = [s.strip() for s in symbols if s.strip()][:6]
 
     async def fetch(sym: str):
-        html = await client.get_html(f"/company/{sym}/consolidated/")
-        return parse_overview(html)
+        page = await fetch_company_page(sym, "consolidated")
+        return page, parse_overview(page.html)
 
     results = await asyncio.gather(*[fetch(s) for s in stock_list], return_exceptions=True)
 
     stocks = []
+    warnings: list[str] = []
+    missing_all: list[str] = []
     for sym, result in zip(stock_list, results):
         if isinstance(result, Exception):
-            stocks.append({"symbol": sym, "error": "Symbol not found — use the NSE trading symbol (e.g. INFY, not INFOSYS)."})
+            entry = {"symbol": sym.upper(), "error": str(result)}
+            if isinstance(result, ToolError) and result.details.get("candidates"):
+                entry["candidates"] = result.details["candidates"]
+            stocks.append(entry)
+            warnings.append(f"{sym.upper()}: {result}")
             continue
 
-        ratios = result.get("key_ratios", {})
+        page, overview = result
+        warnings += page.warnings
+        missing = overview_missing_fields(overview)
+        missing_all += [f"{page.symbol}.{m}" for m in missing]
+        ratios = overview.get("key_ratios", {})
         stocks.append({
-            "symbol": sym,
-            "name": result.get("name"),
-            "price": result.get("current_price"),
-            "market_cap": _find_ratio(ratios, "Market Cap"),
-            "pe_ratio": _find_ratio(ratios, "Stock P/E", "P/E"),
-            "roe": _find_ratio(ratios, "Return on equity", "ROE"),
-            "roce": _find_ratio(ratios, "Return on capital employed", "ROCE"),
-            "debt_to_equity": _find_ratio(ratios, "Debt to equity"),
-            "dividend_yield": _find_ratio(ratios, "Dividend Yield"),
-            "book_value": _find_ratio(ratios, "Book Value"),
+            "symbol": page.symbol,
+            "name": overview.get("name"),
+            "financial_type": page.financial_type,
+            "price": overview.get("current_price") or None,
+            "market_cap": _find_ratio(ratios, "Market Cap") or None,
+            "pe_ratio": _find_ratio(ratios, "Stock P/E", "P/E") or None,
+            "roe": _find_ratio(ratios, "Return on equity", "ROE") or None,
+            "roce": _find_ratio(ratios, "Return on capital employed", "ROCE") or None,
+            "debt_to_equity": _find_ratio(ratios, "Debt to equity") or None,
+            "dividend_yield": _find_ratio(ratios, "Dividend Yield") or None,
+            "book_value": _find_ratio(ratios, "Book Value") or None,
+            "missing_fields": missing,
             "red_flags": _compute_red_flags(ratios),
         })
 
-    return {
-        "stocks": stocks,
-        "count": len([s for s in stocks if "error" not in s]),
-    }
+    failed = [s for s in stocks if "error" in s]
+    return ToolResult(
+        data={"stocks": stocks, "count": len(stocks) - len(failed)},
+        warnings=warnings,
+        missing_fields=missing_all,
+        partial=bool(failed or missing_all),
+        reason="Some symbols failed or had blank fields on the source page." if (failed or missing_all) else None,
+    )
 
 
 # ─── Document Analysis ────────────────────────────────────────────────────────
 
 @mcp.tool(annotations={"title": "Get Document List", "readOnlyHint": True, "openWorldHint": True})
-async def get_document_list(symbol: str) -> str:
+async def get_document_list(symbol: str) -> dict:
     """
     List all available annual reports and earnings call transcripts for a company.
 
@@ -536,18 +668,24 @@ async def analyze_annual_report(
     year: int,
     question: str = "",
     pdf_url: str = "",
-) -> str:
+    force_reindex: bool = False,
+) -> dict:
     """
     Ask any question about a company's annual report using AI-powered semantic search.
 
     Downloads the PDF, indexes it into a local vector database (ChromaDB),
     and retrieves the most relevant sections to answer your question.
     Results are cached — subsequent calls on the same report are instant.
+    The response's data.document.freshness shows last_indexed_at, the
+    source PDF's sha256/ETag, and source_changed (a HEAD check against the
+    live PDF; null if it can't tell) so you can judge staleness.
 
     symbol: NSE/BSE symbol (e.g., "TCS")
     year: report year (e.g., 2024, 2023)
     question: what you want to know (leave blank for a general summary)
     pdf_url: optional — provide directly if you have the link
+    force_reindex: re-download the PDF and rebuild the index (use when
+                   source_changed is true or the index is old)
 
     Requires: pip install pdfplumber sentence-transformers chromadb
 
@@ -556,7 +694,7 @@ async def analyze_annual_report(
       analyze_annual_report("INFY", 2023, "What did management say about margins?")
       analyze_annual_report("RELIANCE", 2024, "Summarize the new energy segment")
     """
-    return await _safe(_analyze_annual_report)(symbol, year, question, pdf_url or None)
+    return await _safe(_analyze_annual_report)(symbol, year, question, pdf_url or None, force_reindex)
 
 
 @mcp.tool(annotations={"title": "Analyze Earnings Call", "readOnlyHint": True, "openWorldHint": True})
@@ -565,7 +703,8 @@ async def analyze_earnings_call(
     quarter: str,
     question: str = "",
     pdf_url: str = "",
-) -> str:
+    force_reindex: bool = False,
+) -> dict:
     """
     Ask any question about an earnings call transcript using semantic search.
 
@@ -576,6 +715,8 @@ async def analyze_earnings_call(
     quarter: e.g., "Q1FY25", "Q2FY26", "Q3FY25"
     question: what you want to know (leave blank for a management commentary summary)
     pdf_url: optional — provide directly if you have the link
+    force_reindex: re-download and rebuild the cached index (see
+                   data.document.freshness for last_indexed_at / source_changed)
 
     Requires: pip install pdfplumber sentence-transformers chromadb
 
@@ -583,7 +724,7 @@ async def analyze_earnings_call(
       analyze_earnings_call("HDFCBANK", "Q3FY25", "What is the guidance on NIM?")
       analyze_earnings_call("TCS", "Q2FY25", "What did they say about deal wins?")
     """
-    return await _safe(_analyze_earnings_call)(symbol, quarter, question, pdf_url or None)
+    return await _safe(_analyze_earnings_call)(symbol, quarter, question, pdf_url or None, force_reindex)
 
 
 @mcp.tool(annotations={"title": "Ask Company Research", "readOnlyHint": True, "openWorldHint": True})
@@ -592,7 +733,7 @@ async def ask_company_research(
     question: str,
     max_annual_reports: int = 3,
     max_earnings_calls: int = 4,
-) -> str:
+) -> dict:
     """
     Ask a question across ALL of a company's cached documents at once —
     multiple annual reports AND earnings call transcripts together — instead
@@ -622,7 +763,7 @@ async def search_market_commentary(
     question: str,
     symbols: list[str],
     top_k_per_symbol: int = 3,
-) -> str:
+) -> dict:
     """
     Semantic search for a question across MULTIPLE companies' already-indexed
     documents at once — e.g. "which of these companies mentioned raw material
@@ -650,7 +791,7 @@ async def get_company_announcements(
     symbol: str,
     category: str = "all",
     days: int = 30,
-) -> str:
+) -> dict:
     """
     Fetch recent company announcements from NSE.
 
@@ -672,7 +813,7 @@ async def search_shareholder(
     name: str,
     symbol: str = "",
     days: int = 365,
-) -> str:
+) -> dict:
     """
     Search NSE bulk/block deals to find activity by a specific investor or entity.
 
@@ -694,7 +835,7 @@ async def search_shareholder(
 
 
 @mcp.tool(annotations={"title": "Get Bulk Deals", "readOnlyHint": True, "openWorldHint": True})
-async def get_bulk_deals(symbol: str, days: int = 90) -> str:
+async def get_bulk_deals(symbol: str, days: int = 90) -> dict:
     """
     Fetch all NSE bulk deals for one company — no investor name required.
 
@@ -713,7 +854,7 @@ async def get_bulk_deals(symbol: str, days: int = 90) -> str:
 
 
 @mcp.tool(annotations={"title": "Get Insider Trading", "readOnlyHint": True, "openWorldHint": True})
-async def get_insider_trading(symbol: str) -> str:
+async def get_insider_trading(symbol: str) -> dict:
     """
     Recent insider trading disclosures (SEBI PIT Regulation 7(2)) for a company.
 
@@ -732,7 +873,7 @@ async def get_insider_trading(symbol: str) -> str:
 
 
 @mcp.tool(annotations={"title": "Get Promoter Pledge History", "readOnlyHint": True, "openWorldHint": True})
-async def get_promoter_pledge_history(symbol: str) -> str:
+async def get_promoter_pledge_history(symbol: str) -> dict:
     """
     Dedicated promoter pledge % trend for a company, with severity assessment.
 
@@ -750,7 +891,7 @@ async def get_promoter_pledge_history(symbol: str) -> str:
 
 
 @mcp.tool(annotations={"title": "Get Credit Ratings", "readOnlyHint": True, "openWorldHint": True})
-async def get_credit_ratings(symbol: str, days: int = 730) -> str:
+async def get_credit_ratings(symbol: str, days: int = 730) -> dict:
     """
     Credit rating actions (CRISIL/ICRA/CARE/India Ratings) for a company —
     a governance/debt-quality check for long-term holders, alongside
@@ -770,7 +911,7 @@ async def get_credit_ratings(symbol: str, days: int = 730) -> str:
 # ─── Commodity Analysis ────────────────────────────────────────────────────────
 
 @mcp.tool(annotations={"title": "Get Commodity Prices", "readOnlyHint": True, "openWorldHint": True})
-async def get_commodity_prices(commodity: str, years: int = 5) -> str:
+async def get_commodity_prices(commodity: str, years: int = 5) -> dict:
     """
     Get commodity price context and its impact on Indian listed companies.
 
@@ -797,7 +938,7 @@ async def notebook_ai(
     symbol: str = "",
     content: str = "",
     note_id: str = "",
-) -> str:
+) -> dict:
     """
     Save, read, and AI-summarize your investment research notes locally.
 
@@ -824,7 +965,7 @@ async def notebook_ai(
 # ─── Portfolio ──────────────────────────────────────────────────────────────────
 
 @mcp.tool(annotations={"title": "Add Portfolio Stock", "readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": False})
-async def add_portfolio_stock(symbol: str, quantity: float, avg_price: float) -> str:
+async def add_portfolio_stock(symbol: str, quantity: float, avg_price: float) -> dict:
     """
     Add a holding to your local portfolio (~/.screener-mcp/portfolio.json).
 
@@ -849,7 +990,7 @@ async def update_portfolio_stock(
     symbol: str,
     quantity: float = 0.0,
     avg_price: float = 0.0,
-) -> str:
+) -> dict:
     """
     Overwrite quantity and/or average price for an existing holding — e.g.
     after a partial sell (set the new remaining quantity) or to correct
@@ -874,7 +1015,7 @@ async def update_portfolio_stock(
 
 
 @mcp.tool(annotations={"title": "Remove Portfolio Stock", "readOnlyHint": False, "destructiveHint": True, "idempotentHint": True, "openWorldHint": False})
-async def remove_portfolio_stock(symbol: str) -> str:
+async def remove_portfolio_stock(symbol: str) -> dict:
     """
     Remove a holding entirely from the portfolio (full exit).
 
@@ -885,7 +1026,7 @@ async def remove_portfolio_stock(symbol: str) -> str:
 
 
 @mcp.tool(annotations={"title": "Get Portfolio", "readOnlyHint": True, "openWorldHint": True})
-async def get_portfolio() -> str:
+async def get_portfolio() -> dict:
     """
     View your portfolio with live prices, P&L, and per-holding weight.
 

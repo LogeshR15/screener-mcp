@@ -64,13 +64,17 @@ def parse_screen_results(html: str) -> dict:
     if not table:
         table = soup.find("table", class_=lambda c: c and "data" in str(c))
 
+    total_results, total_pages = _parse_counts(result_count)
+
     if not table:
-        return {"count": result_count, "companies": [], "columns": []}
+        return {"count": result_count, "companies": [], "columns": [],
+                "total_results": total_results, "total_pages": total_pages}
 
     # Headers are in the first <tr> using <th> tags (no <thead>)
     all_rows = table.find_all("tr")
     if not all_rows:
-        return {"count": result_count, "companies": [], "columns": []}
+        return {"count": result_count, "companies": [], "columns": [],
+                "total_results": total_results, "total_pages": total_pages}
 
     header_row = all_rows[0]
     headers = []
@@ -87,7 +91,7 @@ def parse_screen_results(html: str) -> dict:
         cells = tr.find_all("td")
         if not cells:
             continue
-        row = {}
+        row = {"_company_id": tr.get("data-row-company-id")}
         for i, h in enumerate(headers):
             cell = cells[i] if i < len(cells) else None
             if cell:
@@ -103,4 +107,16 @@ def parse_screen_results(html: str) -> dict:
         "count": result_count,
         "columns": headers,
         "companies": companies,
+        "total_results": total_results,
+        "total_pages": total_pages,
     }
+
+
+def _parse_counts(text: str) -> tuple[int | None, int | None]:
+    """'850 results found: Showing page 1 of 34' → (850, 34)."""
+    results = re.search(r"([\d,]+)\s+results?", text or "")
+    pages = re.search(r"page\s+\d+\s+of\s+(\d+)", text or "", re.I)
+    return (
+        int(results.group(1).replace(",", "")) if results else None,
+        int(pages.group(1)) if pages else None,
+    )
