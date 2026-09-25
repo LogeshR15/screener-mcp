@@ -3,14 +3,17 @@ Stock screening tools — translate natural-language intent into Screener.in que
 and return formatted results with analyst commentary.
 """
 
+import asyncio
+import re
 from typing import Optional
 
 from ..core.envelope import ToolError, ToolResult
+from .research_tools import relative_valuation_for
 from .technical_tools import (
     DEFAULT_MAX_CANDIDATES,
     fetch_candidates,
+    parse_query,
     run_technical_screen,
-    split_query,
 )
 
 # ─── Pre-built query templates ─────────────────────────────────────────────────
@@ -154,6 +157,78 @@ Stock screening on Screener.in requires a free account. To enable it:
 """
 
 
+# ─── result hygiene ───────────────────────────────────────────────────────────
+# Broad screens sorted by growth used to be dominated by tiny, illiquid names
+# with one-off numbers (e.g. EPS 370 on a ₹0.10 Cr market cap). Two guards:
+#   1. a minimum market cap added to the Screener query unless the query
+#      already constrains market cap;
+#   2. per-row sanity checks; flagged rows are dropped (and listed) by default.
+
+DEFAULT_MIN_MARKET_CAP = 100  # ₹ Cr
+
+
+def sanity_flags(fundamentals: dict) -> list[str]:
+    f = fundamentals or {}
+    def num(key):
+        v = f.get(key)
+        return v if isinstance(v, (int, float)) else None
+    flags = []
+    pe, mcap, price = num("Price to Earning"), num("Market Capitalization"), num("Current Price")
+    profit, sales = num("Net Profit latest quarter"), num("Sales latest quarter")
+    growth = num("YOY Quarterly profit growth")
+    if pe is not None and 0 < pe < 1:
+        flags.append("P/E below 1 — earnings probably one-off or misreported")
+    if growth is not None and growth > 500 and (mcap or 0) < 1000:
+        flags.append("quarterly profit up >500% on a small base — likely a one-off")
+    if profit is not None and sales is not None and sales > 0 and profit > sales:
+        flags.append("quarterly profit exceeds sales — other income / exceptional item")
+    if sales is not None and sales <= 0.5 and (mcap or 0) < 500:
+        flags.append("negligible sales (≤ ₹0.5 Cr last quarter)")
+    if price is not None and price < 1:
+        flags.append("price below ₹1")
+    return flags
+
+
+def _mentions_mcap(query: str) -> bool:
+    return bool(re.search(r"market\s+capitali[sz]ation", query or "", re.I))
+
+
+def _apply_hygiene(rows: list[dict], exclude_flagged: bool, min_market_cap: float = 0,
+                   fundamentals_key: str = "fundamentals"):
+    kept, excluded = [], []
+    for r in rows:
+        f = r.get(fundamentals_key) or {}
+        flags = sanity_flags(f)
+        mcap = f.get("Market Capitalization")
+        # backstop for the query-side guard (e.g. when the source ignores it)
+        if min_market_cap and isinstance(mcap, (int, float)) and mcap < min_market_cap:
+            flags.append(f"market cap ₹{mcap:g} Cr below the ₹{min_market_cap:g} Cr minimum")
+        if flags:
+            r["data_quality_flags"] = flags
+        if flags and exclude_flagged:
+            excluded.append({"symbol": r.get("symbol"), "name": r.get("name"), "flags": flags})
+        else:
+            kept.append(r)
+    return kept, excluded
+
+
+async def _attach_peer_relative(rows: list[dict], warnings: list[str], cap: int = 20):
+    targets = rows[:cap]
+    results = await asyncio.gather(*[relative_valuation_for(r["symbol"]) for r in targets], return_exceptions=True)
+    failed = 0
+    for r, rel in zip(targets, results):
+        if isinstance(rel, Exception):
+            failed += 1
+            continue
+        r["relative_valuation"] = {k: rel[k] for k in (
+            "industry", "industry_median_pe", "pe_vs_industry_pct", "industry_median_roce",
+            "roce_vs_industry_pp", "assessment") if k in rel}
+    if len(rows) > cap:
+        warnings.append(f"Peer-relative valuation added for the first {cap} results only.")
+    if failed:
+        warnings.append(f"Peer-relative valuation unavailable for {failed} result(s).")
+
+
 async def screen_stocks(
     query: str,
     sort_by: str = "",
@@ -161,27 +236,62 @@ async def screen_stocks(
     limit: int = 25,
     universe: str = "",
     max_candidates: int = DEFAULT_MAX_CANDIDATES,
+    min_market_cap: float = DEFAULT_MIN_MARKET_CAP,
+    exclude_flagged: bool = True,
+    peer_relative: bool = False,
 ) -> ToolResult:
     """
-    Run a Screener.in query, optionally mixed with technical clauses.
-
-    Example queries:
-      "Market Capitalization < 5000 AND Return on capital employed > 15"
-      "Return on capital employed > 15 AND 52 week low distance < 10"
-      "RSI < 30 AND Price above 200 DMA"            (technical-only: no login needed)
+    Run a Screener.in query, optionally mixed with technical clauses, with
+    AND / OR / parentheses.
     """
-    fundamental, technical = split_query(query)
     limit = max(1, min(int(limit or 25), 200))
+    groups = parse_query(query)
+    warnings: list[str] = []
+    guard = f"Market Capitalization > {min_market_cap:g}" if min_market_cap and not _mentions_mcap(query) else None
 
     try:
-        if technical:
-            result = await run_technical_screen(
-                fundamental, technical, universe=universe, limit=limit,
-                max_candidates=max_candidates, sort_by=sort_by, order=order,
-            )
-            result.data = {"query": query, **result.data}
-            return result
-        rows, total = await fetch_candidates(query=query, max_rows=limit, sort=sort_by, order=order)
+        if any(tech for _, tech in groups):
+            merged: dict[str, dict] = {}
+            partial_reasons, stats = [], {"candidates_available": 0, "candidates_scanned": 0}
+            sources, filters = [], []
+            for gi, (fundamental, technical) in enumerate(groups, 1):
+                fund = fundamental + ([guard] if guard and fundamental else [])
+                res = await run_technical_screen(
+                    fund, technical, universe=universe, limit=10_000,
+                    max_candidates=max_candidates, sort_by=sort_by, order=order,
+                )
+                d = res.data
+                sources.append(d["source"])
+                filters.append(d["technical_filters"])
+                stats["candidates_available"] += d["candidates_available"] or 0
+                stats["candidates_scanned"] += d["candidates_scanned"]
+                for w in res.warnings:
+                    if w not in warnings:
+                        warnings.append(w)
+                if res.partial and res.reason:
+                    partial_reasons.append(f"group {gi}: {res.reason}" if len(groups) > 1 else res.reason)
+                for m in d["results"]:
+                    entry = merged.setdefault(m["company_id"], {**m, "matched_groups": []})
+                    entry["matched_groups"].append(gi)
+            # Groups with no fundamental clauses scan an index universe (large caps
+            # already), so the market-cap guard is only added to Screener-query groups.
+            rows = list(merged.values())
+            data = {
+                "query": query,
+                "or_groups": len(groups),
+                "source": sources[0] if len(sources) == 1 else sources,
+                "technical_filters": filters[0] if len(filters) == 1 else filters,
+                **stats,
+            }
+            partial = bool(partial_reasons)
+            reason = " ".join(partial_reasons) or None
+        else:
+            screener_query = query if not guard else (
+                f"({query}) AND {guard}" if re.search(r"\bOR\b", query, re.I) else f"{query} AND {guard}")
+            rows, total = await fetch_candidates(
+                query=screener_query, max_rows=limit + (25 if exclude_flagged else 0), sort=sort_by, order=order)
+            data = {"query": query, "screener_query": screener_query, "total_matches": total}
+            partial, reason = False, None
     except PermissionError:
         raise ToolError(
             _LOGIN_REQUIRED_MSG.format(query=query).strip(),
@@ -191,22 +301,28 @@ async def screen_stocks(
                  "login against an index universe such as nifty500.",
         )
 
-    warnings = []
+    if guard:
+        warnings.append(f"Added '{guard}' to filter out micro-caps — pass min_market_cap=0 to disable, "
+                        "or put your own Market Capitalization clause in the query.")
+    rows, excluded = _apply_hygiene(rows, exclude_flagged, min_market_cap if guard else 0)
+    if excluded:
+        warnings.append(f"Excluded {len(excluded)} result(s) with implausible numbers (see "
+                        "excluded_for_data_quality) — pass exclude_flagged=False to keep them, flagged.")
+        data["excluded_for_data_quality"] = excluded[:25]
+
+    rows = rows[:limit]
+    if peer_relative and rows:
+        await _attach_peer_relative(rows, warnings)
     if not rows:
         warnings.append(
             "No companies matched. Screener query syntax uses field names like "
             "`Market Capitalization`, `Return on capital employed`, `Debt to equity`, "
             "`Profit growth 5Years`, `Price to Earning`."
         )
-    return ToolResult(
-        data={
-            "query": query,
-            "total_matches": total,
-            "showing": len(rows),
-            "results": rows,
-        },
-        warnings=warnings,
-    )
+    data.update({"showing": len(rows), "results": rows})
+    if "matches_found" not in data and any(tech for _, tech in groups):
+        data["matches_found"] = len(rows)
+    return ToolResult(data=data, warnings=warnings, partial=partial, reason=reason)
 
 
 async def screen_by_theme(theme: str, limit: int = 20) -> ToolResult:

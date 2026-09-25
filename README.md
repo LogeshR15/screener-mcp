@@ -81,7 +81,7 @@ If these return real data, the server is working end to end.
 - **Market & research** — commodity price context, local research notes
 - **Portfolio** — a private, local holdings tracker with live P&L
 
-35 tools in total — full reference [below](#tools--35-total). Every tool returns the same [response envelope](#response-envelope), so partial or degraded data is always explicit.
+38 tools in total — full reference [below](#tools--38-total). Every tool returns the same [response envelope](#response-envelope), so partial or degraded data is always explicit.
 
 ---
 
@@ -92,6 +92,9 @@ If these return real data, the server is working end to end.
 - **Find pullbacks** — `"High-ROCE, low-debt stocks near their 52-week low"` → `get_52_week_low_candidates`, or `screen_stocks("Return on capital employed > 15 AND 52 week low distance < 10")`
 - **Market vs company-specific** — `"Is this fall sector-wide or just this stock?"` → `compare_to_sector`
 - **What the Street thinks** — `"Analyst targets and recent news for TMPV"` → `get_analyst_targets`, `get_recent_news`
+- **Is it cheap for its sector?** — `"Which of these 15 stocks trade below their industry P/E?"` → `get_relative_valuation`, or `screen_stocks(..., peer_relative=True)`
+- **Moat check** — `"Is MSUMI a market leader with durable returns?"` → `get_moat_signals`
+- **Future growth** — `"What's the order pipeline and guidance for BEL?"` → `get_forward_outlook`
 - **Read an annual report** — `"What are the key risks in Reliance's 2024 annual report?"` → `analyze_annual_report`
 - **Read an earnings call** — `"What did TCS say about margins in Q3FY25?"` → `analyze_earnings_call`
 - **Spot red flags** — `"What are the red flags in Asian Paints?"` → `analyze_red_flags`
@@ -178,7 +181,7 @@ Claude Desktop does **not** inherit your shell environment, so credentials must 
 
 **4.** Quit Claude Desktop completely (**Cmd+Q** on macOS) and reopen it.
 
-**5.** Check the tools icon in the message composer — `screener` should list its 35 tools. Then ask: `"Search for Asian Paints"`.
+**5.** Check the tools icon in the message composer — `screener` should list its 38 tools. Then ask: `"Search for Asian Paints"`.
 
 > Server not showing up? Check **Settings → Developer** for its status, and the logs at `~/Library/Application Support/Claude/logs/mcp-server-screener.log` (macOS) or `%APPDATA%\Claude\logs\` (Windows). Invalid JSON — often a stray trailing comma — makes Claude Desktop skip every server silently.
 
@@ -264,7 +267,7 @@ Never commit real credentials — the values above are placeholders.
 
 ---
 
-## Tools — 35 total
+## Tools — 38 total
 
 Grouped by category. See [Example workflows](#example-workflows) for the ones you'll reach for most.
 
@@ -290,6 +293,7 @@ Grouped by category. See [Example workflows](#example-workflows) for the ones yo
 |------|-------------|:---:|
 | `screen_stocks` | Screener.in query plus technical clauses (52W distance, RSI, DMA, volume spike) | Fundamental clauses only |
 | `get_52_week_low_candidates` | Quality filters + proximity to 52-week low, with overview fields per match | No |
+| `get_relative_valuation` | P/E and ROCE vs the industry median for up to 20 stocks at once | No |
 | `compare_to_sector` | Stock's return vs its sector index and Nifty 50, with a market-vs-company verdict | No |
 | `screen_by_theme` | Pre-built thematic screens | Yes |
 | `list_investment_themes` | Show all available themes | No |
@@ -323,6 +327,8 @@ Grouped by category. See [Example workflows](#example-workflows) for the ones yo
 |------|-------------|:---:|
 | `get_recent_news` | Recent news headlines for a company (Google News), newest first | No |
 | `get_analyst_targets` | Consensus target price (mean/median/high/low, analyst count, rating split) + broker targets in recent headlines | No |
+| `get_forward_outlook` | Analyst EPS/revenue estimates, order wins and capex filings, management guidance from the latest earnings call | No (`[ai]` for guidance) |
+| `get_moat_signals` | Revenue share/rank and industry concentration (HHI), plus ROCE, margin and promoter-holding durability | No |
 | `get_commodity_prices` | Benchmark price, period moves, ≈INR price + impacted companies | No |
 | `notebook_ai` | Save, read, and AI-summarize research notes locally | No |
 
@@ -389,13 +395,13 @@ Profit growth 5Years > 20 AND Sales growth 5Years > 15 AND Debt to equity < 0.3
 Dividend yield > 3 AND Return on equity > 15 AND Pledged percentage < 5
 ```
 
-Supported operators: `>` `<` `>=` `<=` `=` `AND`
+Supported operators: `>` `<` `>=` `<=` `=`, combined with `AND`, `OR` and parentheses
 
 Full field list in [CONTRIBUTING.md](CONTRIBUTING.md#screenerinscreenerinquery-field-names).
 
 ### Technical clauses
 
-Mix these with fundamental clauses using `AND`:
+Mix these with fundamental clauses using `AND`, `OR` and parentheses:
 
 ```
 52 week low distance < 10        % above the 52-week low
@@ -409,9 +415,22 @@ Volume vs 20 day average > 2     today's volume ÷ 20-day average volume
 ```
 Return on capital employed > 15 AND Debt to equity < 0.5 AND 52 week low distance < 10
 RSI < 30 AND Price above 200 DMA                          (technical-only: no login needed)
+(Return on capital employed > 20 OR Return on equity > 25) AND Price above 200 DMA
+Return on capital employed > 15 AND (RSI < 30 OR 52 week low distance < 5)
 ```
 
 Fundamental clauses run on Screener.in as usual. The technical clauses are then evaluated against up to `max_candidates` (default 150) of those matches, using daily price history from Screener's public chart API. A query with only technical clauses scans an NSE index instead (`universe`, default `nifty500`; also `nifty50`, `midcap100`, `smallcap100`, `smallcap250`, `bank`, `it`, `auto`, `pharma`, `fmcg`, `metal`, `realty`, `energy`, `defence`, `chemicals`, ...). If some candidates weren't checked, the response has `partial: true` and a `reason`. The 52-week range is based on closing prices.
+
+When `OR` groups contain no technical clauses, they go to Screener unchanged, since Screener supports them. When a technical clause sits under an `OR`, each alternative runs as its own screen, up to 6. The results are merged, and each result's `matched_groups` shows which alternatives it satisfied.
+
+### Result hygiene
+
+Screens sorted by growth used to fill up with tiny illiquid names showing one-off numbers. Two guards are now on by default:
+
+- **`min_market_cap`** (₹100 Cr) is added to the Screener query unless your query already has a `Market Capitalization` clause. Set it to `0` to turn it off.
+- **`exclude_flagged`** drops rows with implausible numbers and lists them under `excluded_for_data_quality`. The checks are: P/E below 1, a quarterly profit jump over 500% on a small base, quarterly profit above sales, negligible sales, and a price below ₹1. Set it to `False` to keep these rows, marked with `data_quality_flags`.
+
+Pass `peer_relative=True` to add each result's P/E and ROCE compared with its industry median.
 
 ---
 
@@ -523,7 +542,7 @@ screener-mcp/
 ├── scripts/canary.py               # Daily live check against Screener.in (see .github/workflows/canary.yml)
 ├── tests/                          # Offline tests (no network) + a real-page fixture
 └── src/screener_mcp/
-    ├── server.py                   # FastMCP — all 35 tool definitions
+    ├── server.py                   # FastMCP — all 38 tool definitions
     ├── client.py                   # Screener.in HTTP client + auth
     ├── core/
     │   ├── envelope.py             # Standard response envelope for every tool
@@ -531,7 +550,8 @@ screener-mcp/
     │   ├── quality.py              # Missing-field detection + ratio sanity bounds
     │   ├── technicals.py           # Price history → 52W range, DMA, RSI, volume ratio
     │   ├── indices.py              # NSE index universes + sector benchmarks
-    │   ├── yahoo.py                # Yahoo Finance session (consensus targets)
+    │   ├── yahoo.py                # Yahoo Finance session (consensus targets, estimates)
+    │   ├── industry.py             # Industry pages → medians, revenue share, HHI
     │   ├── nse_client.py           # NSE India API (announcements, filings)
     │   ├── rag.py                  # PDF → chunk → embed → query pipeline
     │   └── vector_store.py         # ChromaDB wrapper
@@ -551,6 +571,7 @@ screener-mcp/
         ├── shareholders.py         # Bulk deal / shareholder search
         ├── insider_trading.py      # SEBI PIT insider trading disclosures
         ├── market_tools.py         # Recent news + analyst targets
+        ├── research_tools.py       # Relative valuation, moat signals, forward outlook
         ├── commodities.py          # Commodity price analysis
         ├── notebook.py             # Research notes
         └── portfolio.py            # Local portfolio tracker

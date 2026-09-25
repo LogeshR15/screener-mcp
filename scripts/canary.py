@@ -130,9 +130,28 @@ async def analyst_consensus():
     _check(d.get("consensus") and d["consensus"].get("analysts", 0) > 5, f"no TCS consensus: {env.get('warnings')}")
 
 
+async def relative_valuation():
+    d = _ok(await server.get_relative_valuation(["TCS"]), "relative valuation")
+    r = d["results"][0]
+    _check(r["industry_median_pe"] and r["industry_companies"] >= 20,
+           f"industry page not parsed for TCS: {r}")
+
+
+async def moat_signals():
+    d = _ok(await server.get_moat_signals("MSUMI"), "moat signals")
+    _check(d.get("industry") and d["industry"]["companies"] >= 50 and d["position"],
+           f"industry position missing: {d.get('industry')}, {d.get('position')}")
+    _check(d["durability"].get("roce"), "ROCE history not parsed")
+
+
+async def forward_outlook():
+    d = _ok(await server.get_forward_outlook("BEL", include_earnings_call=False), "forward outlook")
+    _check(d.get("analyst_estimates") and d["analyst_estimates"]["years"], "no BEL analyst estimates")
+
+
 HARD = [overview_consolidated, overview_standalone_fallback, financial_tables, symbol_resolution,
-        technical_screen, sector_compare, peers]
-SOFT = [nse_announcements, news_feed, analyst_consensus]  # third-party feeds: warn, don't fail
+        technical_screen, sector_compare, peers, relative_valuation, moat_signals]
+SOFT = [nse_announcements, news_feed, analyst_consensus, forward_outlook]  # third-party feeds: warn, don't fail
 
 
 async def main() -> int:

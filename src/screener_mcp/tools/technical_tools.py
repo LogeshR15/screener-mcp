@@ -136,25 +136,125 @@ def parse_technical_clause(clause: str) -> Optional[TechFilter]:
     return None
 
 
-def split_query(query: str) -> tuple[list[str], list[TechFilter]]:
-    """Split a screen query into (fundamental clauses, technical filters)."""
+# ─── boolean query structure (AND / OR / parentheses) ─────────────────────────
+# Screener already understands OR and parentheses, so a query with no technical
+# clauses is passed through untouched. When technical clauses are present the
+# query is parsed into a tree and expanded into OR-of-AND groups (DNF); each
+# group runs as its own screen and the results are merged. Parenthesised
+# sub-expressions that are purely fundamental stay intact as a single clause
+# for Screener, so only the technical parts multiply out.
+
+MAX_OR_GROUPS = 6
+_TOKEN_RE = re.compile(r"(\(|\)|\bAND\b|\bOR\b)", re.I)
+
+
+def _tokens(query: str) -> list[str]:
+    query = re.sub(r"rsi\s*\(\s*14\s*\)", "RSI 14", query, flags=re.I)
+    return [t.strip() for t in _TOKEN_RE.split(query) if t and t.strip()]
+
+
+def _parse_expr(tokens: list[str], i: int = 0):
+    node, i = _parse_term(tokens, i)
+    children = [node]
+    while i < len(tokens) and tokens[i].upper() == "OR":
+        node, i = _parse_term(tokens, i + 1)
+        children.append(node)
+    return (children[0] if len(children) == 1 else ("or", children)), i
+
+
+def _parse_term(tokens: list[str], i: int):
+    node, i = _parse_factor(tokens, i)
+    children = [node]
+    while i < len(tokens) and tokens[i].upper() == "AND":
+        node, i = _parse_factor(tokens, i + 1)
+        children.append(node)
+    return (children[0] if len(children) == 1 else ("and", children)), i
+
+
+def _parse_factor(tokens: list[str], i: int):
+    if i >= len(tokens):
+        raise ToolError("Query ends unexpectedly — check for a trailing AND/OR.", "invalid_query")
+    tok = tokens[i]
+    if tok == "(":
+        node, i = _parse_expr(tokens, i + 1)
+        if i >= len(tokens) or tokens[i] != ")":
+            raise ToolError("Unbalanced parentheses in query.", "invalid_query")
+        return node, i + 1
+    if tok == ")" or tok.upper() in ("AND", "OR"):
+        raise ToolError(f"Unexpected '{tok}' in query.", "invalid_query")
+    return ("clause", tok), i + 1
+
+
+def _has_technical(node) -> bool:
+    if node[0] == "clause":
+        return parse_technical_clause(node[1]) is not None
+    return any(_has_technical(c) for c in node[1])
+
+
+def _to_text(node) -> str:
+    if node[0] == "clause":
+        return node[1]
+    joiner = " AND " if node[0] == "and" else " OR "
+    parts = [f"({_to_text(c)})" if c[0] != "clause" else _to_text(c) for c in node[1]]
+    return joiner.join(parts)
+
+
+def _dnf(node) -> list[list[tuple]]:
+    """OR-of-AND groups; atoms are ("fund", text) or ("tech", TechFilter)."""
+    if not _has_technical(node):
+        text = _to_text(node)
+        return [[("fund", f"({text})" if node[0] == "or" else text)]]
+    if node[0] == "clause":
+        return [[("tech", parse_technical_clause(node[1]))]]
+    if node[0] == "or":
+        return [group for child in node[1] for group in _dnf(child)]
+    groups = [[]]
+    for child in node[1]:
+        groups = [g + h for g in groups for h in _dnf(child)]
+        if len(groups) > MAX_OR_GROUPS:
+            break
+    return groups
+
+
+def parse_query(query: str) -> list[tuple[list[str], list[TechFilter]]]:
+    """Split a screen query into OR-groups of (fundamental clauses, technical filters).
+
+    A query with no technical clauses comes back as one group holding the
+    original query text, untouched.
+    """
     query = (query or "").strip()
     if not query:
-        return [], []
-    clauses = [c for c in re.split(r"\s+AND\s+", query, flags=re.I) if c.strip()]
-    fundamental, technical = [], []
-    for clause in clauses:
-        tf = parse_technical_clause(clause)
-        if tf:
-            technical.append(tf)
-        else:
-            fundamental.append(clause.strip())
-    if technical and any(re.search(r"\bOR\b", c, re.I) or "(" in c for c in fundamental):
+        return [([], [])]
+    tokens = _tokens(query)
+    tree, i = _parse_expr(tokens)
+    if i != len(tokens):
+        raise ToolError(f"Unexpected '{tokens[i]}' in query — check parentheses.", "invalid_query")
+    if not _has_technical(tree):
+        return [([query], [])]
+    groups = _dnf(tree)
+    if len(groups) > MAX_OR_GROUPS:
         raise ToolError(
-            "Technical clauses can only be combined with AND at the top level. Move OR / "
-            "parenthesised fundamental groups into a separate screen, or drop them.",
+            f"This query expands to more than {MAX_OR_GROUPS} alternative screens once technical clauses "
+            "are distributed over OR. Simplify it, or split it into separate screens.",
             "invalid_query",
         )
+    out = []
+    for g in groups:
+        fundamental = [t for kind, t in g if kind == "fund"]
+        technical = [t for kind, t in g if kind == "tech"]
+        out.append((fundamental, technical))
+    return out
+
+
+def split_query(query: str) -> tuple[list[str], list[TechFilter]]:
+    """Single-group convenience wrapper around parse_query (AND-only queries)."""
+    groups = parse_query(query)
+    if len(groups) > 1:
+        raise ToolError("Query has OR alternatives — use parse_query.", "invalid_query")
+    fundamental, technical = groups[0]
+    if not technical and fundamental:
+        # no technical clauses: split the passthrough text for callers that want clauses
+        fundamental = [c.strip() for c in re.split(r"\s+AND\s+", fundamental[0], flags=re.I) if c.strip()]
     return fundamental, technical
 
 

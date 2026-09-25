@@ -40,6 +40,9 @@ EXPECTED_TOOLS = {
     "compare_to_sector",
     "get_recent_news",
     "get_analyst_targets",
+    "get_relative_valuation",
+    "get_moat_signals",
+    "get_forward_outlook",
     "screen_by_theme",
     "list_investment_themes",
     # Document analysis (RAG)
