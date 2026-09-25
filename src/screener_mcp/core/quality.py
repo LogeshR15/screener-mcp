@@ -66,6 +66,18 @@ def explain_missing(missing: list[str], all_core_missing: bool) -> str:
     return reason
 
 
+# ─── sector awareness ─────────────────────────────────────────────────────────
+
+_FINANCIAL_MARKERS = ("bank", "nbfc", "non banking", "finance", "financial services", "insurance", "housing finance")
+
+
+def is_financial(sectors: list[str]) -> bool:
+    """Banks, NBFCs, insurers: leverage is the business model, so debt-to-equity
+    and working-capital-day metrics don't mean what they do for other companies."""
+    text = " ".join(sectors or []).lower()
+    return any(m in text for m in _FINANCIAL_MARKERS)
+
+
 # ─── ratio-history sanity bounds ──────────────────────────────────────────────
 
 # (min, max) inclusive plausible range per ratios-table row. Values outside get
@@ -99,12 +111,19 @@ def _flag(period: str, value: float, raw: str, reason: str) -> dict:
     }
 
 
-def check_ratio_history(years: list[str], rows: list[dict]) -> dict[str, list[dict]]:
+_DAYS_KEYS = {"debtor days", "inventory days", "days payable", "cash conversion cycle", "working capital days"}
+
+
+def check_ratio_history(years: list[str], rows: list[dict], financial: bool = False) -> dict[str, list[dict]]:
     """Return {row label: [flag, ...]} for implausible ratio-history values.
 
     Checks each row against RATIO_BOUNDS, and each period's Cash Conversion
     Cycle against Debtor Days + Inventory Days − Days Payable (the identity
     Screener computes it from — a mismatch means the columns were misparsed).
+
+    ``financial=True`` (banks/NBFCs/insurers) skips the days-based checks —
+    those metrics aren't meaningful for lenders, so "out of range" isn't a
+    parse signal there.
     """
     flags: dict[str, list[dict]] = {}
     by_label: dict[str, dict] = {_norm_label(r.get("label", "")): r for r in rows}
@@ -121,7 +140,7 @@ def check_ratio_history(years: list[str], rows: list[dict]) -> dict[str, list[di
 
     for key, (lo, hi) in RATIO_BOUNDS.items():
         row = by_label.get(key)
-        if not row:
+        if not row or (financial and key in _DAYS_KEYS):
             continue
         for period, value, raw in period_values(row):
             if value is None:
@@ -135,7 +154,7 @@ def check_ratio_history(years: list[str], rows: list[dict]) -> dict[str, list[di
                 flags.setdefault(row["label"], []).append(_flag(period, value, raw, reason))
 
     parts = [by_label.get(k) for k in ("debtor days", "inventory days", "days payable", "cash conversion cycle")]
-    if all(parts):
+    if all(parts) and not financial:
         debtor, inventory, payable, ccc = (dict((p, v) for p, v, _ in period_values(r)) for r in parts)
         raw_ccc = {p: raw for p, _, raw in period_values(parts[3])}
         for period, ccc_val in ccc.items():

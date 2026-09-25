@@ -6,6 +6,7 @@ network service required; this is purely local state for the long-term
 investor use case (Tapetide gates the equivalent behind a paid account).
 """
 
+import asyncio
 import json
 import logging
 from pathlib import Path
@@ -165,11 +166,11 @@ async def get_portfolio() -> ToolResult:
     total_current = 0.0
     price_errors = []
 
-    for symbol, h in holdings.items():
+    prices = await asyncio.gather(*[_live_price(sym) for sym in holdings])
+    for (symbol, h), price in zip(holdings.items(), prices):
         qty = h["quantity"]
         avg = h["avg_price"]
         invested = qty * avg
-        price = await _live_price(symbol)
 
         if price is None:
             price_errors.append(symbol)
@@ -190,42 +191,33 @@ async def get_portfolio() -> ToolResult:
         total_invested += invested
         total_current += current
 
-    lines = [
-        "# Portfolio",
-        "",
-        f"{'Symbol':<12} {'Qty':>8} {'Avg ₹':>10} {'LTP ₹':>10} {'Invested ₹':>13} {'Current ₹':>13} {'P&L ₹':>12} {'P&L %':>8} {'Wt %':>7}",
-        "-" * 108,
-    ]
-
+    holdings_out = []
     for r in sorted(rows, key=lambda x: x["current"] or 0, reverse=True):
-        weight = (r["current"] / total_current * 100) if r["current"] and total_current else 0.0
-        price_s = f"{r['price']:.2f}" if r["price"] is not None else "N/A"
-        current_s = f"{r['current']:.2f}" if r["current"] is not None else "N/A"
-        pnl_s = f"{r['pnl']:+.2f}" if r["pnl"] is not None else "N/A"
-        pnl_pct_s = f"{r['pnl_pct']:+.1f}%" if r["pnl_pct"] is not None else "N/A"
-        weight_s = f"{weight:.1f}%" if r["current"] is not None else "—"
-        lines.append(
-            f"{r['symbol']:<12} {r['qty']:>8g} {r['avg']:>10.2f} {price_s:>10} "
-            f"{r['invested']:>13.2f} {current_s:>13} {pnl_s:>12} {pnl_pct_s:>8} {weight_s:>7}"
-        )
+        weight = (r["current"] / total_current * 100) if r["current"] and total_current else None
+        holdings_out.append({
+            "symbol": r["symbol"],
+            "quantity": r["qty"],
+            "avg_price": round(r["avg"], 2),
+            "ltp": r["price"],
+            "invested": round(r["invested"], 2),
+            "current_value": round(r["current"], 2) if r["current"] is not None else None,
+            "pnl": round(r["pnl"], 2) if r["pnl"] is not None else None,
+            "pnl_pct": round(r["pnl_pct"], 2) if r["pnl_pct"] is not None else None,
+            "weight_pct": round(weight, 2) if weight is not None else None,
+        })
 
-    lines.append("-" * 108)
-    total_pnl = total_current - total_invested if total_current else None
-    total_pnl_pct = (total_pnl / total_invested * 100) if total_pnl is not None and total_invested else None
-    lines.append(
-        f"{'TOTAL':<12} {'':>8} {'':>10} {'':>10} {total_invested:>13.2f} "
-        f"{f'{total_current:.2f}' if total_current else 'N/A':>13} "
-        f"{f'{total_pnl:+.2f}' if total_pnl is not None else 'N/A':>12} "
-        f"{f'{total_pnl_pct:+.1f}%' if total_pnl_pct is not None else 'N/A':>8}"
-    )
-
-    if price_errors:
-        lines.append("")
-        lines.append(f"**Note:** Could not fetch live price for: {', '.join(price_errors)} (invested value only shown).")
-
+    priced_invested = sum(r["invested"] for r in rows if r["current"] is not None)
+    totals = {
+        "invested": round(total_invested, 2),
+        "current_value": round(total_current, 2) if total_current else None,
+        # P&L only over holdings with a live price, so a missing price can't masquerade as a loss
+        "pnl": round(total_current - priced_invested, 2) if total_current else None,
+        "pnl_pct": round((total_current - priced_invested) / priced_invested * 100, 2) if total_current and priced_invested else None,
+        "pnl_basis": "holdings with a live price only" if price_errors else "all holdings",
+    }
     return ToolResult(
-        data={"report": "\n".join(lines)},
+        data={"holdings": holdings_out, "totals": totals, "currency": "INR"},
         missing_fields=[f"{sym}.price" for sym in price_errors],
-        reason=(f"Live price unavailable for {', '.join(price_errors)} — totals exclude their current "
-                "value, so portfolio P&L is incomplete.") if price_errors else None,
+        reason=(f"Live price unavailable for {', '.join(price_errors)} — totals.pnl covers only holdings "
+                "with a live price.") if price_errors else None,
     )

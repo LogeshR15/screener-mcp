@@ -110,7 +110,7 @@ Claude (Code / Desktop)
         │
         ├──► Screener.in   (financials, ratios, screening)
         ├──► NSE India     (announcements, bulk deals, filings)
-        └──► MCX India     (commodity prices)
+        └──► Yahoo Finance (international commodity benchmarks)
         │
         ▼
   Research data (parsed, cached, indexed)
@@ -277,7 +277,7 @@ Grouped by category. See [Example workflows](#example-workflows) for the ones yo
 | `get_shareholding_pattern` | Promoter / FII / DII holding trend | No |
 | `get_peer_comparison` | Sector peer comparison table | No |
 | `compare_companies` | Side-by-side comparison (2–5 stocks) | No |
-| `compare_stocks_ui` | Interactive dashboard (Claude Desktop) | No |
+| `compare_stocks_ui` | Interactive comparison dashboard (MCP App); plain JSON in other hosts | No |
 | `get_full_analysis` | All data combined for deep analysis | No |
 | `analyze_red_flags` | Structured red flag detection | No |
 | `explain_for_beginners` | Plain-language company explainer | No |
@@ -319,7 +319,7 @@ Grouped by category. See [Example workflows](#example-workflows) for the ones yo
 
 | Tool | What it does | Login needed |
 |------|-------------|:---:|
-| `get_commodity_prices` | Commodity price context + impacted companies | No |
+| `get_commodity_prices` | Benchmark price, period moves, ≈INR price + impacted companies | No |
 | `notebook_ai` | Save, read, and AI-summarize research notes locally | No |
 
 ### Portfolio
@@ -411,6 +411,12 @@ Fundamental clauses run on Screener.in as usual. The technical clauses are then 
 
 ---
 
+## Keeping it working
+
+Screener.in changes its pages without notice. A scheduled GitHub Action ([`canary.yml`](.github/workflows/canary.yml)) runs [`scripts/canary.py`](scripts/canary.py) every day. It checks the real tools against known companies: overviews, the standalone fallback, financial tables, symbol resolution, a technical screen, sector comparison and peers. If a check fails, it opens a **"Live canary failing"** issue. NSE checks only warn, because NSE often blocks GitHub's IPs. You can run it locally with `python scripts/canary.py`.
+
+---
+
 ## Response envelope
 
 Every tool returns the same shape:
@@ -489,10 +495,12 @@ Then point the client at `http://<host>:8000/mcp`.
 |--------|--------------|
 | [Screener.in](https://www.screener.in) | 10+ years of financials, ratios, shareholding, peers |
 | [NSE India](https://www.nseindia.com) | Announcements, annual reports, bulk deals, insider trading disclosures |
-| [MCX India](https://www.mcxindia.com) | Commodity prices (best-effort) |
+| [Yahoo Finance](https://finance.yahoo.com) chart API | International commodity benchmarks (COMEX, ICE Brent, NYMEX) and USD/INR |
 
 - Financial data lags by ~1 quarter
-- Screener.in rate-limits bursts; the client caps concurrency (`SCREENER_MAX_CONCURRENCY`, default 4) and retries 429s with backoff, so large technical screens take ~15–60s
+- Screener.in rate-limits bursts. The client caps concurrency (`SCREENER_MAX_CONCURRENCY`, default 4) and retries 429s with backoff. Price history is cached in `~/.screener-mcp/price_cache`: during market hours for 15 minutes, otherwise until the next session. A cold technical screen can take a minute; repeat screens are fast. Set `SCREENER_PRICE_CACHE=0` to disable the cache
+- Commodity prices are the international benchmarks MCX contracts track. The INR figure is a plain FX conversion, before import duty and GST, so it's below the MCX quote. Nickel has no free feed and returns `partial`
+- For banks, NBFCs and insurers, debt-to-equity and working-capital-day checks are skipped because they aren't meaningful for lenders. Judge these companies on ROE, asset quality and capital adequacy
 - Document analysis requires machine-readable PDFs (scanned/image-only PDFs may fail)
 - NSE bulk deals only capture single trades > 0.5% of equity
 - The NSE-backed tools (`get_company_announcements`, `get_credit_ratings`, `get_insider_trading`, `get_bulk_deals`, `search_shareholder`) depend on NSE's public API, which often rate-limits or blocks server IPs. When that happens the tool returns `status: "error"` with `error.type: "upstream_unavailable"`. When only some bulk-deal days fail, it returns `partial`. An empty list with `status: "ok"` means NSE really had no rows. These tools resolve fuzzy symbols the same way as the Screener tools, and they return a `not_on_nse` error for companies listed only on BSE.
@@ -505,7 +513,8 @@ Then point the client at `http://<host>:8000/mcp`.
 ```
 screener-mcp/
 ├── run_server.py
-├── tests/                          # Offline registry + docs-consistency tests
+├── scripts/canary.py               # Daily live check against Screener.in (see .github/workflows/canary.yml)
+├── tests/                          # Offline tests (no network) + a real-page fixture
 └── src/screener_mcp/
     ├── server.py                   # FastMCP — all 33 tool definitions
     ├── client.py                   # Screener.in HTTP client + auth
@@ -521,6 +530,9 @@ screener-mcp/
     ├── parsers/
     │   ├── company.py              # Screener.in company page parser
     │   └── screener.py             # Screen results parser
+    ├── ui/
+    │   ├── stock_comparison.html   # compare_stocks_ui dashboard (MCP App)
+    │   └── ext-apps-app-with-deps.js  # vendored MCP Apps runtime (MIT)
     └── tools/
         ├── company_tools.py        # Company data tools
         ├── screening_tools.py      # Stock screening + themes

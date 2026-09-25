@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "screener-mcp"
-version = "0.2.0"
+version = "0.3.0"
 description = "Indian Stock Research MCP server powered by Screener.in"
 readme = "README.md"
 license = { text = "MIT" }
@@ -45,6 +45,9 @@ screener-mcp = "screener_mcp.server:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+screener_mcp = ["ui/*.html", "ui/*.js", "ui/*.LICENSE"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

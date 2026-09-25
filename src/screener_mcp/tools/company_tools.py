@@ -16,10 +16,12 @@ from ..core.quality import (
     annotate_rows,
     check_ratio_history,
     explain_missing,
+    is_financial,
     overview_field,
     overview_missing_fields,
 )
 from ..parsers.company import (
+    debt_to_equity,
     parse_overview,
     parse_profit_loss,
     parse_balance_sheet,
@@ -146,7 +148,10 @@ async def get_financials(
 
     warnings = []
     if statement == "ratios":
-        flags = check_ratio_history(shown_years, rows)
+        financial = is_financial(parse_overview(page.html).get("sectors", []))
+        flags = check_ratio_history(shown_years, rows, financial=financial)
+        if financial:
+            data["sector_note"] = "Financial company — days/working-capital sanity checks skipped (not meaningful for lenders)."
         data["rows"] = annotate_rows(shown_years, rows, flags)
         n = sum(len(f) for f in flags.values())
         if n:
@@ -159,203 +164,146 @@ async def get_financials(
     return page_result(page, data, warnings=warnings)
 
 
+def _num_or_raw(v):
+    n = to_number(v)
+    return n if n is not None else blank_to_none(v)
+
+
+def _table_rows(rows: list[dict], label_key: str, n: int) -> list[dict]:
+    return [
+        {"label": r.get(label_key, ""), "values": [_num_or_raw(v) for v in r.get("values", [])[-n:]]}
+        for r in rows
+    ]
+
+
 async def get_quarterly_results(symbol: str, financial_type: FinancialType = "consolidated") -> ToolResult:
     page = await fetch_company_page(symbol, financial_type)
-    symbol, financial_type = page.symbol, page.financial_type
-    data = parse_quarterly_results(page.html)
-
-    years = data.get("years", [])[-8:]
-    rows = data.get("rows", [])
-    if not years or not rows or not any(v for r in rows for v in r.get("values", [])):
+    table = parse_quarterly_results(page.html)
+    quarters = table.get("years", [])[-8:]
+    rows = table.get("rows", [])
+    data = {
+        "symbol": page.symbol,
+        "financial_type": page.financial_type,
+        "units": "₹ Cr (OPM % and EPS as labelled)",
+        "quarters": quarters,
+        "rows": _table_rows(rows, "label", len(quarters)) if quarters else [],
+    }
+    if not quarters or not any(v for r in rows for v in r.get("values", [])):
         return page_result(
-            page, {"report": f"No quarterly results available for {symbol}."},
-            missing=["quarterly_results"],
-            reason=f"Source page returned no quarterly results for {symbol} [{financial_type}].",
+            page, data, missing=["quarterly_results"],
+            reason=f"Source page returned no quarterly results for {page.symbol} [{page.financial_type}].",
         )
+    return page_result(page, data)
 
-    lines = [
-        f"## {symbol} — Quarterly Results (₹ Crore) [{financial_type}]",
-        "",
-        f"{'Metric':<30} " + "  ".join(f"{y:>12}" for y in years),
-        "-" * (30 + 15 * len(years)),
-    ]
-    for row in rows:
-        label = row.get("label", "")
-        all_vals = row.get("values", [])
-        values = all_vals[-len(years):]
-        # right-pad if fewer values than years
-        values = values + [""] * (len(years) - len(values))
-        lines.append(f"{label:<30} " + "  ".join(f"{v:>12}" for v in values))
 
-    return page_result(page, {"report": "\n".join(lines)})
+def _pct(v) -> float | None:
+    return to_number(v)
+
+
+def _shareholding(page: CompanyPage) -> tuple[list[str], list[dict]]:
+    data = parse_shareholding(page.html)
+    return data.get("quarters", []), data.get("rows", [])
 
 
 async def get_shareholding(symbol: str) -> ToolResult:
     page = await fetch_company_page(symbol, "standalone")
-    symbol = page.symbol
-    data = parse_shareholding(page.html)
-
-    quarters = data.get("quarters", [])[-8:]
-    rows = data.get("rows", [])
+    all_quarters, rows = _shareholding(page)
+    quarters = all_quarters[-8:]
+    data = {
+        "symbol": page.symbol,
+        "units": "% of shares (No. of Shareholders is a count)",
+        "quarters": quarters,
+        "rows": _table_rows(rows, "category", len(quarters)) if quarters else [],
+    }
     if not quarters or not rows:
-        return page_result(
-            page, {"report": f"No shareholding data found for {symbol}."},
-            missing=["shareholding"],
-            reason=f"Source page returned no shareholding table for {symbol}.",
-        )
+        return page_result(page, data, missing=["shareholding"],
+                           reason=f"Source page returned no shareholding table for {page.symbol}.")
 
-    lines = [
-        f"## {symbol} — Shareholding Pattern (%)",
-        "",
-        f"{'Category':<25} " + "  ".join(f"{q:>10}" for q in quarters),
-        "-" * (25 + 13 * len(quarters)),
-    ]
-    for row in rows:
-        cat = row.get("category", "")
-        all_vals = row.get("values", [])
-        values = all_vals[-len(quarters):]
-        values = values + [""] * (len(quarters) - len(values))
-        lines.append(f"{cat:<25} " + "  ".join(f"{v:>10}" for v in values))
-
-    # Promoter trend analysis
-    promoter_row = next((r for r in rows if "promoter" in r.get("category", "").lower()), None)
-    if promoter_row and len(promoter_row.get("values", [])) >= 2:
-        vals = promoter_row["values"]
-        try:
-            latest = float(vals[-1].replace("%", "").strip())
-            oldest = float(vals[0].replace("%", "").strip())
-            delta = latest - oldest
-            trend = "increasing" if delta > 0.5 else "decreasing" if delta < -0.5 else "stable"
-            sign = "+" if delta >= 0 else ""
-            lines += [
-                "",
-                f"**Promoter holding trend**: {trend} ({sign}{delta:.1f}% over shown period)",
-            ]
-        except (ValueError, IndexError):
-            pass
-
-    return page_result(page, {"report": "\n".join(lines)})
+    promoter = next((r for r in data["rows"] if "promoter" in r["label"].lower()), None)
+    if promoter:
+        vals = [v for v in promoter["values"] if isinstance(v, (int, float))]
+        if len(vals) >= 2:
+            delta = round(vals[-1] - vals[0], 2)
+            data["promoter_trend"] = {
+                "direction": "increasing" if delta > 0.5 else "decreasing" if delta < -0.5 else "stable",
+                "change_pp": delta,
+                "over_quarters": len(vals),
+            }
+    return page_result(page, data)
 
 
 async def get_promoter_pledge_history(symbol: str) -> ToolResult:
     """Dedicated view of promoter pledge % trend, pulled out of the shareholding table."""
     page = await fetch_company_page(symbol, "standalone")
-    symbol = page.symbol
-    data = parse_shareholding(page.html)
-
-    quarters = data.get("quarters", [])
-    rows = data.get("rows", [])
+    quarters, rows = _shareholding(page)
     if not quarters or not rows:
-        return page_result(
-            page, {"report": f"No shareholding data found for {symbol}."},
-            missing=["shareholding"],
-            reason=f"Source page returned no shareholding table for {symbol}.",
-        )
+        return page_result(page, {"symbol": page.symbol, "pledge_row_found": False}, missing=["shareholding"],
+                           reason=f"Source page returned no shareholding table for {page.symbol}.")
 
-    pledge_row = next(
-        (r for r in rows if "pledge" in r.get("category", "").lower()), None
-    )
-
+    pledge_row = next((r for r in rows if "pledge" in r.get("category", "").lower()), None)
     if not pledge_row:
-        return page_result(page, {"pledge_row_found": False, "report": (
-            f"## {symbol} — Promoter Pledge\n\n"
-            "No dedicated pledge row found in Screener.in's shareholding table for this company.\n\n"
-            "This usually means **promoter shares are not pledged** — Screener only shows the "
-            "line when pledging exists. To be certain, cross-check the 'Pledged percentage' "
-            "field via `screen_stocks(\"Pledged percentage > 0\")` filtered to this symbol, or "
-            "the company's own shareholding pattern (SAST) filings."
-        )})
+        return page_result(page, {
+            "symbol": page.symbol,
+            "pledge_row_found": False,
+            "interpretation": (
+                "Screener.in shows a pledge row only when promoter shares are pledged, so its "
+                "absence usually means no pledge. To be certain, check the company's SAST "
+                "shareholding filings."
+            ),
+        })
 
-    vals = pledge_row.get("values", [])[-len(quarters):]
-    vals_padded = vals + [""] * (len(quarters) - len(vals))
-
-    lines = [
-        f"## {symbol} — Promoter Pledge History (%)",
-        "",
-        f"{'Quarter':<12} " + "  ".join(f"{q:>10}" for q in quarters),
-        f"{'Pledged %':<12} " + "  ".join(f"{v:>10}" for v in vals_padded),
-    ]
-
-    def _pct(v: str) -> float | None:
-        try:
-            return float(str(v).replace("%", "").strip())
-        except (ValueError, TypeError):
-            return None
-
-    numeric = [(_pct(v)) for v in vals if _pct(v) is not None]
+    values = [_pct(v) for v in pledge_row.get("values", [])[-len(quarters):]]
+    history = [{"quarter": q, "pledged_pct": v} for q, v in zip(quarters[-len(values):], values)]
+    numeric = [v for v in values if v is not None]
+    data = {"symbol": page.symbol, "pledge_row_found": True, "history": history}
     if numeric:
         latest = numeric[-1]
-        severity = (
-            "**High severity** — over 50% of promoter holding is pledged, a significant risk."
-            if latest > 50
-            else "**Moderate concern** — meaningful pledge exists; watch for further increases."
-            if latest > 20
-            else "**Low concern** — pledge level is modest."
-            if latest > 0
-            else "No pledge currently."
-        )
-        trend = (
-            "rising" if len(numeric) >= 2 and numeric[-1] > numeric[0] + 0.5
-            else "falling" if len(numeric) >= 2 and numeric[-1] < numeric[0] - 0.5
-            else "stable"
-        )
-        lines += ["", f"**Latest pledge**: {latest:.1f}% — {severity}", f"**Trend**: {trend}"]
-
-    return page_result(page, {"pledge_row_found": True, "report": "\n".join(lines)})
+        data["latest_pledged_pct"] = latest
+        data["severity"] = ("high" if latest > 50 else "moderate" if latest > 20
+                            else "low" if latest > 0 else "none")
+        data["trend"] = ("rising" if len(numeric) >= 2 and numeric[-1] > numeric[0] + 0.5
+                         else "falling" if len(numeric) >= 2 and numeric[-1] < numeric[0] - 0.5
+                         else "stable")
+        data["severity_scale"] = ">50% high risk, 20-50% moderate, <20% low"
+    return page_result(page, data)
 
 
 async def get_peers(symbol: str, financial_type: FinancialType = "consolidated") -> ToolResult:
     client = await get_client()
     page = await fetch_company_page(symbol, financial_type)
-    symbol, html = page.symbol, page.html
 
     # Screener.in's real peer table is loaded client-side via an AJAX call
     # keyed on the company's "warehouse id" (distinct from its numeric id):
     #   GET /api/company/{warehouse_id}/peers/
-    # Fetch that endpoint directly instead of relying on the initial page load.
-    warehouse_id = parse_warehouse_id(html)
+    warehouse_id = parse_warehouse_id(page.html)
     peers: list[dict[str, str]] = []
     if warehouse_id:
-        ajax_html = await client.get_html(f"/api/company/{warehouse_id}/peers/")
-        peers = parse_peers_ajax(ajax_html)
-
+        peers = parse_peers_ajax(await client.get_html(f"/api/company/{warehouse_id}/peers/"))
     if not peers:
-        peers = parse_peers(html)
+        peers = parse_peers(page.html)
 
-    if not peers:
-        return page_result(
-            page,
-            {"report": f"No peer data found for {symbol}. Use `compare_companies([\"SYMBOL1\", \"SYMBOL2\"])` to compare specific companies side-by-side."},
-            missing=["peers"],
-            reason="Screener.in's peer-comparison endpoint returned no rows.",
-        )
+    sectors = [p for p in peers if "Sector Level" in p]
+    rows = [p for p in peers if not p.get("_note") and "Sector Level" not in p]
+    columns = [c for c in (rows[0].keys() if rows else []) if not c.startswith("_") and c != "S.No."]
+    data = {
+        "symbol": page.symbol,
+        "financial_type": page.financial_type,
+        "columns": columns,
+        "rows": [{c: _num_or_raw(r.get(c)) if c != "Name" else r.get(c) for c in columns} for r in rows],
+    }
+    if sectors:
+        data["sector_context"] = {s["Sector Level"]: s["Name"] for s in sectors}
+    if not rows:
+        return page_result(page, data, missing=["peers"],
+                           reason="Screener.in's peer-comparison endpoint returned no rows.")
+    return page_result(page, data)
 
-    # Check if we only got sector breadcrumb context (no actual peer rows)
-    if peers[0].get("_note"):
-        lines = [f"## {symbol} — Peer Comparison", "", peers[0]["_note"], ""]
-        sector_rows = [p for p in peers[1:] if "Sector Level" in p]
-        for r in sector_rows:
-            lines.append(f"  {r['Sector Level']}: {r['Name']}")
-        lines.append(
-            "\nTo compare peers manually, use `compare_companies([\"SYMBOL1\", \"SYMBOL2\", ...])`."
-        )
-        return page_result(
-            page, {"report": "\n".join(lines)},
-            missing=["peers"],
-            reason="Peer table unavailable — only sector context could be extracted.",
-        )
 
-    columns = [c for c in peers[0].keys() if not c.startswith("_")]
-    col_widths = {c: max(len(c), max(len(str(r.get(c, ""))) for r in peers)) for c in columns}
-
-    header = "  ".join(f"{c:{col_widths[c]}}" for c in columns)
-    separator = "  ".join("-" * col_widths[c] for c in columns)
-    lines = [f"## {symbol} — Peer Comparison", "", header, separator]
-
-    for row in peers:
-        lines.append("  ".join(f"{str(row.get(c, '')):{col_widths[c]}}" for c in columns))
-
-    return page_result(page, {"report": "\n".join(lines)})
+_COMPARE_METRICS = [
+    ("market_cap_cr", "market_cap"), ("current_price", "current_price"), ("pe", "pe"),
+    ("book_value", "book_value"), ("roce", "roce"), ("roe", "roe"),
+    ("dividend_yield", "dividend_yield"), ("52_week_high", "52_week_high"), ("52_week_low", "52_week_low"),
+]
 
 
 async def compare_companies(symbols: list[str], financial_type: FinancialType = "consolidated") -> ToolResult:
@@ -373,77 +321,39 @@ async def compare_companies(symbols: list[str], financial_type: FinancialType = 
 
     results = await asyncio.gather(*[fetch(s) for s in symbols], return_exceptions=True)
 
-    companies = []
-    failed = []
-    missing_all = []
+    companies, failed, missing_all = [], [], []
     for requested, r in zip(symbols, results):
         if isinstance(r, Exception):
             entry = {"requested_symbol": requested, "error": str(r)}
             if isinstance(r, ToolError) and r.details.get("candidates"):
                 entry["candidates"] = r.details["candidates"]
             failed.append(entry)
+            hint = f" Candidates: {', '.join(c['symbol'] for c in entry['candidates'])}." if entry.get("candidates") else ""
+            warnings.append(f"Could not fetch {requested}: {r}{hint}")
             continue
         page, ov = r
         warnings += page.warnings
         missing = overview_missing_fields(ov)
+        missing_all += [f"{page.symbol}.{m}" for m in missing]
+        company = {
+            "symbol": page.symbol,
+            "name": ov.get("name"),
+            "financial_type": page.financial_type,
+            "sectors": ov.get("sectors", []),
+            **{out: to_number(overview_field(ov, src)) for out, src in _COMPARE_METRICS},
+            "debt_to_equity": None if is_financial(ov.get("sectors", [])) else debt_to_equity(page.html),
+            "other_ratios": {k: _num_or_raw(v) for k, v in ov.get("key_ratios", {}).items()
+                             if k not in {"Market Cap", "Stock P/E", "Book Value", "Dividend Yield", "ROCE", "ROE"}},
+        }
         if missing:
-            warnings.append(f"{page.symbol}: no value on source page for {', '.join(missing)}.")
-            missing_all += [f"{page.symbol}.{m}" for m in missing]
-        companies.append((page.symbol, ov))
+            company["missing_fields"] = missing
+        companies.append(company)
 
     if not companies:
-        raise ToolError(
-            "Could not fetch data for any of the requested companies.",
-            "symbol_not_found",
-            failed=failed,
-        )
-    for f in failed:
-        hint = f" Candidates: {', '.join(c['symbol'] for c in f['candidates'])}." if f.get("candidates") else ""
-        warnings.append(f"Could not fetch {f['requested_symbol']}: {f['error']}{hint}")
-
-    # Build comparison table
-    metrics_order = [
-        "Market Cap", "Current Price", "Stock P/E", "Price to Book value",
-        "Return on capital employed", "Return on equity",
-        "Dividend Yield", "Debt to equity", "Sales growth 5Years",
-        "Profit growth 5Years", "ROCE 5Year",
-    ]
-
-    lines = ["# Company Comparison", ""]
-    header = f"{'Metric':<35} " + "  ".join(f"{sym:>15}" for sym, _ in companies)
-    lines.append(header)
-    lines.append("-" * len(header))
-
-    # Key ratios
-    all_ratio_keys = set()
-    for _, data in companies:
-        all_ratio_keys.update(data.get("key_ratios", {}).keys())
-
-    # Show ordered metrics first, then remaining
-    shown = set()
-    for metric in metrics_order:
-        for key in all_ratio_keys:
-            if metric.lower() in key.lower() and key not in shown:
-                row = f"{key:<35} " + "  ".join(
-                    f"{data.get('key_ratios', {}).get(key) or '—':>15}" for _, data in companies
-                )
-                lines.append(row)
-                shown.add(key)
-
-    for key in sorted(all_ratio_keys - shown):
-        row = f"{key:<35} " + "  ".join(
-            f"{data.get('key_ratios', {}).get(key) or '—':>15}" for _, data in companies
-        )
-        lines.append(row)
-
-    # Sectors
-    lines += ["", "**Sectors:**"]
-    for sym, data in companies:
-        sectors = ", ".join(data.get("sectors", []))
-        lines.append(f"- {sym}: {sectors or '—'}")
+        raise ToolError("Could not fetch data for any of the requested companies.", "symbol_not_found", failed=failed)
 
     return ToolResult(
-        data={"symbols": [sym for sym, _ in companies], "failed": failed, "report": "\n".join(lines)},
+        data={"companies": companies, "failed": failed, "units": {"market_cap_cr": "₹ Cr", "prices": "₹", "ratios": "%"}},
         warnings=warnings,
         missing_fields=missing_all,
         partial=bool(failed or missing_all),

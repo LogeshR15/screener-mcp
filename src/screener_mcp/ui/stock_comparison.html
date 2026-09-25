@@ -1,0 +1,163 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Stock Comparison</title>
+<style>
+  :root {
+    color-scheme: light;
+    --bg: #ffffff; --fg: #1f2328; --muted: #656d76; --line: #e3e6ea;
+    --head: #f6f8fa; --best: #1a7f37; --best-bg: #dafbe1;
+    --crit: #cf222e; --crit-bg: #ffebe9; --warn: #9a6700; --warn-bg: #fff8c5;
+    --info: #0969da; --info-bg: #ddf4ff;
+  }
+  :root.dark {
+    color-scheme: dark;
+    --bg: #0d1117; --fg: #e6edf3; --muted: #8d96a0; --line: #30363d;
+    --head: #161b22; --best: #3fb950; --best-bg: #12261e;
+    --crit: #ff7b72; --crit-bg: #2d1214; --warn: #d29922; --warn-bg: #272115;
+    --info: #58a6ff; --info-bg: #121d2f;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 12px; font: 13px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
+         background: var(--bg); color: var(--fg); }
+  h1 { font-size: 15px; margin: 0 0 8px; }
+  .muted { color: var(--muted); }
+  .banner { border-radius: 6px; padding: 6px 10px; margin: 0 0 8px; font-size: 12px; }
+  .banner.warn { background: var(--warn-bg); color: var(--warn); }
+  .banner.crit { background: var(--crit-bg); color: var(--crit); }
+  .wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 8px; }
+  table { border-collapse: collapse; width: 100%; min-width: 420px; }
+  th, td { padding: 7px 10px; border-bottom: 1px solid var(--line); text-align: right; white-space: nowrap; }
+  th:first-child, td:first-child { text-align: left; position: sticky; left: 0; background: var(--bg); }
+  thead th { background: var(--head); font-weight: 600; vertical-align: bottom; }
+  thead th:first-child { background: var(--head); }
+  tr:last-child td { border-bottom: none; }
+  .sym { font-size: 13px; }
+  .name { display: block; font-weight: 400; font-size: 11px; color: var(--muted); max-width: 160px;
+          overflow: hidden; text-overflow: ellipsis; margin-left: auto; }
+  td.best { color: var(--best); background: var(--best-bg); font-weight: 600; }
+  td.na { color: var(--muted); }
+  .flags { display: flex; flex-direction: column; gap: 3px; align-items: flex-end; white-space: normal; }
+  .chip { border-radius: 10px; padding: 1px 8px; font-size: 11px; max-width: 220px; text-align: left; }
+  .chip.critical { background: var(--crit-bg); color: var(--crit); }
+  .chip.warning { background: var(--warn-bg); color: var(--warn); }
+  .chip.info { background: var(--info-bg); color: var(--info); }
+  .chip.clean { background: var(--best-bg); color: var(--best); }
+  .err { color: var(--crit); font-weight: 400; white-space: normal; font-size: 11px; }
+  button.cand { font: inherit; font-size: 11px; margin: 2px 2px 0 0; padding: 1px 6px; border-radius: 10px;
+                border: 1px solid var(--line); background: var(--head); color: var(--fg); cursor: pointer; }
+  .legend { margin-top: 8px; font-size: 11px; }
+  #empty { padding: 24px; text-align: center; }
+</style>
+</head>
+<body>
+<div id="root"><div id="empty" class="muted">Waiting for comparison data…</div></div>
+
+<script type="module">
+/*__EXT_APPS_BUNDLE__*/
+const { App } = globalThis.ExtApps;
+
+// metric key, label, direction for "best" highlighting (+1 higher is better, -1 lower is better, 0 none)
+const METRICS = [
+  ["price", "Price (₹)", 0],
+  ["market_cap", "Market cap (₹ Cr)", 0],
+  ["pe_ratio", "P/E", -1],
+  ["roce", "ROCE %", 1],
+  ["roe", "ROE %", 1],
+  ["debt_to_equity", "Debt / equity", -1],
+  ["dividend_yield", "Dividend yield %", 1],
+  ["book_value", "Book value (₹)", 0],
+];
+
+const num = (v) => {
+  if (v === null || v === undefined || v === "") return null;
+  const n = parseFloat(String(v).replace(/[^0-9.\-]/g, ""));
+  return Number.isFinite(n) ? n : null;
+};
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) =>
+  ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+const app = new App({ name: "ScreenerStockComparison", version: "1.0.0" }, {}, { autoResize: true });
+
+function applyTheme(ctx) {
+  document.documentElement.classList.toggle("dark", ctx?.theme === "dark");
+}
+
+function payloadFrom(result) {
+  if (result?.structuredContent) return result.structuredContent;
+  const text = result?.content?.find((c) => c.type === "text")?.text;
+  try { return text ? JSON.parse(text) : null; } catch { return null; }
+}
+
+function render(env) {
+  const root = document.getElementById("root");
+  if (!env) { root.innerHTML = `<div id="empty" class="muted">No data returned.</div>`; return; }
+  if (env.status === "error") {
+    root.innerHTML = `<div class="banner crit">${esc(env.reason || "Comparison failed.")}</div>`;
+    return;
+  }
+  const stocks = env.data?.stocks ?? env.stocks ?? [];
+  const ok = stocks.filter((s) => !s.error);
+  const parts = [`<h1>Stock comparison <span class="muted">· ${ok.length} of ${stocks.length}</span></h1>`];
+  for (const w of env.warnings ?? []) parts.push(`<div class="banner warn">${esc(w)}</div>`);
+
+  // best value per metric among stocks that have it
+  const best = {};
+  for (const [key, , dir] of METRICS) {
+    if (!dir) continue;
+    const vals = ok.map((s) => num(s[key])).filter((v) => v !== null);
+    if (vals.length > 1) best[key] = dir > 0 ? Math.max(...vals) : Math.min(...vals);
+  }
+
+  const head = stocks.map((s) => `<th><span class="sym">${esc(s.symbol)}</span>` +
+    (s.error ? "" : `<span class="name" title="${esc(s.name)}">${esc(s.name)}</span>`) + `</th>`).join("");
+  const rows = METRICS.map(([key, label]) => {
+    const cells = stocks.map((s) => {
+      if (s.error) return `<td class="na">—</td>`;
+      const v = s[key];
+      if (v === null || v === undefined || v === "") return `<td class="na" title="not on source page">—</td>`;
+      const isBest = best[key] !== undefined && num(v) === best[key];
+      return `<td class="${isBest ? "best" : ""}">${esc(v)}</td>`;
+    }).join("");
+    return `<tr><td>${label}</td>${cells}</tr>`;
+  }).join("");
+
+  const flagCells = stocks.map((s) => {
+    if (s.error) {
+      const cands = (s.candidates ?? []).map((c) =>
+        `<button class="cand" data-sym="${esc(c.symbol)}" title="${esc(c.name)}">${esc(c.symbol)}</button>`).join("");
+      return `<td><div class="err">${esc(s.error)}</div>${cands}</td>`;
+    }
+    const flags = s.red_flags ?? [];
+    const chips = flags.length
+      ? flags.map((f) => `<span class="chip ${esc(f.severity)}">${esc(f.flag)}</span>`).join("")
+      : `<span class="chip clean">No snapshot red flags</span>`;
+    return `<td><div class="flags">${chips}</div></td>`;
+  }).join("");
+
+  parts.push(`<div class="wrap"><table><thead><tr><th>Metric</th>${head}</tr></thead>` +
+    `<tbody>${rows}<tr><td>Red flags</td>${flagCells}</tr></tbody></table></div>`);
+  parts.push(`<div class="legend muted">Green = best in row. Red flags are rule-based checks on a single ` +
+    `snapshot — ask for analyze_red_flags for a full-history review.</div>`);
+  root.innerHTML = parts.join("");
+
+  // candidate chips: let the user retry with a suggested symbol in one click
+  root.querySelectorAll("button.cand").forEach((btn) => btn.addEventListener("click", () => {
+    const current = ok.map((s) => s.symbol);
+    app.sendMessage({
+      role: "user",
+      content: [{ type: "text", text: `Compare ${[...current, btn.dataset.sym].join(", ")} in the dashboard` }],
+    });
+  }));
+}
+
+app.ontoolresult = (result) => render(payloadFrom(result));
+app.onhostcontextchanged = (ctx) => applyTheme(ctx);
+
+await app.connect();
+applyTheme(app.getHostContext());
+</script>
+</body>
+</html>

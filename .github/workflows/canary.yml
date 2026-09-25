@@ -1,0 +1,60 @@
+name: Live canary
+
+# Daily check that the parsers still understand Screener.in's live pages.
+# A failure opens (or comments on) a single "Live canary failing" issue, so a
+# silent site change surfaces within a day instead of as blank research data.
+
+on:
+  schedule:
+    - cron: "30 4 * * *"   # 10:00 IST, while NSE is open
+  workflow_dispatch:
+  # Also live-test PRs that change how pages are fetched or parsed.
+  pull_request:
+    paths:
+      - "src/screener_mcp/parsers/**"
+      - "src/screener_mcp/core/**"
+      - "src/screener_mcp/client.py"
+      - "src/screener_mcp/tools/**"
+      - "scripts/canary.py"
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  canary:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+
+      - name: Run live canary
+        id: canary
+        env:
+          CANARY_REPORT: canary-report.md
+        run: python -u scripts/canary.py
+
+      - name: Open or update issue on failure
+        if: failure() && steps.canary.outcome == 'failure' && github.event_name != 'pull_request'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          title="Live canary failing"
+          body="$(printf 'The daily live canary failed on %s.\n\n%s\n\nRun: %s/%s/actions/runs/%s' \
+            "$(date -u +%Y-%m-%d)" "$(cat canary-report.md 2>/dev/null || echo 'see run log')" \
+            "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID")"
+          existing="$(gh issue list --state open --search "in:title \"$title\"" --json number -q '.[0].number')"
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --body "$body"
+          else
+            gh issue create --title "$title" --body "$body"
+          fi
