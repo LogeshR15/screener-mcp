@@ -310,6 +310,8 @@ async def screen_stocks(
                         "excluded_for_data_quality) — pass exclude_flagged=False to keep them, flagged.")
         data["excluded_for_data_quality"] = excluded[:25]
 
+    if any(tech for _, tech in groups):
+        data["matches_found"] = len(rows)  # after hygiene, before the limit cut
     rows = rows[:limit]
     if peer_relative and rows:
         await _attach_peer_relative(rows, warnings)
@@ -320,8 +322,6 @@ async def screen_stocks(
             "`Profit growth 5Years`, `Price to Earning`."
         )
     data.update({"showing": len(rows), "results": rows})
-    if "matches_found" not in data and any(tech for _, tech in groups):
-        data["matches_found"] = len(rows)
     return ToolResult(data=data, warnings=warnings, partial=partial, reason=reason)
 
 

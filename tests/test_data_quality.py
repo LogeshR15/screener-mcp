@@ -840,7 +840,10 @@ async def test_or_groups_run_separately_and_merge(monkeypatch):
                                 "results": [{"symbol": f"S{cid}", "company_id": cid, "fundamentals": {}}]})
 
     monkeypatch.setattr(st_mod, "run_technical_screen", fake_run)
+    env = await server.screen_stocks("RSI < 30 OR Volume vs 20 day average > 3", universe="nifty50", limit=1)
+    assert env["data"]["matches_found"] == 2 and env["data"]["showing"] == 1   # count isn't capped by limit
     env = await server.screen_stocks("RSI < 30 OR Volume vs 20 day average > 3", universe="nifty50")
+    calls[:] = calls[-2:]
     assert [m for _, m in calls] == [["rsi14"], ["volume_vs_20d_avg"]]
     assert {r["symbol"]: r["matched_groups"] for r in env["data"]["results"]} == {"S1": [1], "S2": [2]}
     assert env["data"]["or_groups"] == 2
