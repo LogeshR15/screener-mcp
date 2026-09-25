@@ -5,8 +5,13 @@ and return formatted results with analyst commentary.
 
 from typing import Optional
 
-from ..client import get_client
-from ..parsers.screener import parse_screen_results
+from ..core.envelope import ToolError, ToolResult
+from .technical_tools import (
+    DEFAULT_MAX_CANDIDATES,
+    fetch_candidates,
+    run_technical_screen,
+    split_query,
+)
 
 # ─── Pre-built query templates ─────────────────────────────────────────────────
 # These map natural language themes to Screener query strings.
@@ -154,57 +159,57 @@ async def screen_stocks(
     sort_by: str = "",
     order: str = "desc",
     limit: int = 25,
-) -> str:
+    universe: str = "",
+    max_candidates: int = DEFAULT_MAX_CANDIDATES,
+) -> ToolResult:
     """
-    Run a custom Screener.in query.
+    Run a Screener.in query, optionally mixed with technical clauses.
 
     Example queries:
       "Market Capitalization < 5000 AND Return on capital employed > 15"
-      "Debt to equity < 0.5 AND Profit growth 5Years > 15"
+      "Return on capital employed > 15 AND 52 week low distance < 10"
+      "RSI < 30 AND Price above 200 DMA"            (technical-only: no login needed)
     """
-    client = await get_client()
+    fundamental, technical = split_query(query)
+    limit = max(1, min(int(limit or 25), 200))
+
     try:
-        html = await client.get_html(
-            "/screen/raw/",
-            params={"query": query, "sort": sort_by, "order": order},
-        )
+        if technical:
+            result = await run_technical_screen(
+                fundamental, technical, universe=universe, limit=limit,
+                max_candidates=max_candidates, sort_by=sort_by, order=order,
+            )
+            result.data = {"query": query, **result.data}
+            return result
+        rows, total = await fetch_candidates(query=query, max_rows=limit, sort=sort_by, order=order)
     except PermissionError:
-        return _LOGIN_REQUIRED_MSG.format(query=query)
-    data = parse_screen_results(html)
-
-    companies = data.get("companies", [])[:limit]
-    if not companies:
-        return (
-            f"No companies found matching the screen query.\n\n"
-            f"**Query used**: `{query}`\n\n"
-            "Tip: Screener query syntax uses field names like:\n"
-            "  `Market Capitalization`, `Return on capital employed`,\n"
-            "  `Debt to equity`, `Profit growth 5Years`, `Price to Earning`"
+        raise ToolError(
+            _LOGIN_REQUIRED_MSG.format(query=query).strip(),
+            "login_required",
+            query=query,
+            hint="Technical-only queries (e.g. 'RSI < 30 AND Price above 200 DMA') run without "
+                 "login against an index universe such as nifty500.",
         )
 
-    count_text = data.get("count", str(len(companies)))
-    columns = data.get("columns", [])
-
-    lines = [
-        "## Screener Results",
-        f"**Query**: `{query}`",
-        f"**Total matches**: {count_text}  |  Showing top {len(companies)}",
-        "",
-    ]
-
-    # Format as table
-    if columns and companies:
-        col_widths = {c: max(len(c), max(len(str(r.get(c, ""))) for r in companies)) for c in columns}
-        header = "  ".join(f"{c:{col_widths[c]}}" for c in columns)
-        sep = "  ".join("-" * col_widths[c] for c in columns)
-        lines += [header, sep]
-        for r in companies:
-            lines.append("  ".join(f"{str(r.get(c, '')):{col_widths[c]}}" for c in columns))
-
-    return "\n".join(lines)
+    warnings = []
+    if not rows:
+        warnings.append(
+            "No companies matched. Screener query syntax uses field names like "
+            "`Market Capitalization`, `Return on capital employed`, `Debt to equity`, "
+            "`Profit growth 5Years`, `Price to Earning`."
+        )
+    return ToolResult(
+        data={
+            "query": query,
+            "total_matches": total,
+            "showing": len(rows),
+            "results": rows,
+        },
+        warnings=warnings,
+    )
 
 
-async def screen_by_theme(theme: str, limit: int = 20) -> str:
+async def screen_by_theme(theme: str, limit: int = 20) -> ToolResult:
     """
     Run a pre-built thematic screen.
 
@@ -217,24 +222,16 @@ async def screen_by_theme(theme: str, limit: int = 20) -> str:
     # Fuzzy match theme
     theme_key = _match_theme(theme)
     if not theme_key:
-        available = "\n".join(f"  - `{k}`: {v}" for k, v in THEME_DESCRIPTIONS.items())
-        return f"Theme '{theme}' not recognized.\n\nAvailable themes:\n{available}"
+        raise ToolError(
+            f"Theme '{theme}' not recognized.",
+            "invalid_input",
+            available_themes=THEME_DESCRIPTIONS,
+        )
 
     query = QUERY_TEMPLATES[theme_key]
-    description = THEME_DESCRIPTIONS[theme_key]
-
-    header = [
-        f"## {description}",
-        f"**Theme**: `{theme_key}`",
-        f"**Filter**: `{query}`",
-        "",
-    ]
     result = await screen_stocks(query, limit=limit)
-    # Strip the first "## Screener Results" line from result to avoid duplication
-    result_lines = result.split("\n")
-    if result_lines and result_lines[0].startswith("## Screener"):
-        result_lines = result_lines[1:]
-    return "\n".join(header + result_lines)
+    result.data = {"theme": theme_key, "description": THEME_DESCRIPTIONS[theme_key], **result.data}
+    return result
 
 
 async def list_themes() -> str:

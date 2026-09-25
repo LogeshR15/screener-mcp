@@ -10,6 +10,8 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 
+from ..core.envelope import ToolError
+
 logger = logging.getLogger(__name__)
 
 _BASE_DIR = Path.home() / ".screener-mcp" / "notebooks"
@@ -65,7 +67,7 @@ async def notebook_ai(
     # ── create ────────────────────────────────────────────────────────────────
     if action == "create":
         if not symbol or not content:
-            return "**Error:** `create` requires both `symbol` and `content`."
+            raise ToolError("`create` requires both `symbol` and `content`.", "invalid_input")
         nid = str(uuid.uuid4())[:8]
         note = {
             "note_id": nid,
@@ -84,10 +86,10 @@ async def notebook_ai(
     # ── append ─────────────────────────────────────────────────────────────────
     if action == "append":
         if not note_id or not content:
-            return "**Error:** `append` requires `note_id` and `content`."
+            raise ToolError("`append` requires `note_id` and `content`.", "invalid_input")
         path = _find_note(note_id)
         if not path:
-            return f"**Note `{note_id}` not found.** Use `notebook_ai('list')` to see all notes."
+            raise ToolError(f"Note {note_id} not found. Use `notebook_ai('list')` to see all notes.", "not_found")
         note = _load(path)
         note.setdefault("entries", []).append({"timestamp": _now(), "text": content})
         note["updated_at"] = _now()
@@ -100,10 +102,10 @@ async def notebook_ai(
     # ── read ───────────────────────────────────────────────────────────────────
     if action == "read":
         if not note_id:
-            return "**Error:** `read` requires `note_id`."
+            raise ToolError("`read` requires `note_id`.", "invalid_input")
         path = _find_note(note_id)
         if not path:
-            return f"**Note `{note_id}` not found.**"
+            raise ToolError(f"Note {note_id} not found.", "not_found")
         note = _load(path)
         entries = note.get("entries", [])
         lines = [
@@ -152,7 +154,7 @@ async def notebook_ai(
     # ── summarize ─────────────────────────────────────────────────────────────
     if action == "summarize":
         if not symbol:
-            return "**Error:** `summarize` requires `symbol`."
+            raise ToolError("`summarize` requires `symbol`.", "invalid_input")
         search_dir = _note_dir(symbol)
         if not search_dir.exists():
             return f"**No notes found for {symbol.upper()}.**"
@@ -185,20 +187,21 @@ async def notebook_ai(
     # ── delete ─────────────────────────────────────────────────────────────────
     if action == "delete":
         if not note_id:
-            return "**Error:** `delete` requires `note_id`."
+            raise ToolError("`delete` requires `note_id`.", "invalid_input")
         path = _find_note(note_id)
         if not path:
-            return f"**Note `{note_id}` not found.**"
+            raise ToolError(f"Note {note_id} not found.", "not_found")
         note = _load(path)
         path.unlink()
         return f"**Note `{note_id}` deleted.** (was: {note.get('symbol', '?')} — {note.get('updated_at', '')[:10]})"
 
     # ── unknown ────────────────────────────────────────────────────────────────
-    return (
-        f"**Unknown action: '{action}'**\n\n"
-        f"Valid actions: create, append, read, list, summarize, delete\n\n"
+    raise ToolError(
+        f"Unknown action: '{action}'. "
+        f"Valid actions: create, append, read, list, summarize, delete. "
         f"Example:\n"
         f"  notebook_ai('create', symbol='TCS', content='Strong Q3 — revenue beat by 3%...')\n"
         f"  notebook_ai('list')\n"
-        f"  notebook_ai('summarize', symbol='TCS')"
+        f"  notebook_ai('summarize', symbol='TCS')",
+        "invalid_input",
     )

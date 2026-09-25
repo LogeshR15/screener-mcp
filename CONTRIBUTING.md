@@ -62,11 +62,17 @@ claude mcp add screener-dev -s local -- \
 screener-mcp/
 ├── run_server.py                      # Entry point (calls server.main())
 ├── tests/
-│   └── test_tools.py                  # Offline registry + docs-consistency tests
+│   ├── test_tools.py                  # Offline registry + docs-consistency tests
+│   └── test_data_quality.py           # Envelope, symbol resolution, ratio flags, technicals
 └── src/screener_mcp/
-    ├── server.py                      # FastMCP — all 23 tool definitions (start here)
+    ├── server.py                      # FastMCP — all 33 tool definitions (start here)
     ├── client.py                      # Screener.in HTTP client + auth
     ├── core/
+    │   ├── envelope.py                # Standard response envelope (ToolResult, ToolError)
+    │   ├── company_page.py            # Symbol resolution + page fetch + standalone fallback
+    │   ├── quality.py                 # Missing-field detection + ratio sanity bounds
+    │   ├── technicals.py              # Price history → 52W range, DMA, RSI, volume ratio
+    │   ├── indices.py                 # NSE index universes + sector benchmarks
     │   ├── nse_client.py              # NSE India API client (announcements, filings)
     │   ├── rag.py                     # PDF processing + semantic search pipeline
     │   └── vector_store.py            # ChromaDB wrapper for document indexing
@@ -76,6 +82,7 @@ screener-mcp/
     └── tools/
         ├── company_tools.py           # Financials, overview, shareholding, peers
         ├── screening_tools.py         # Screen queries + 15 pre-built themes
+        ├── technical_tools.py         # Technical screens, 52W-low candidates, sector-relative
         ├── analysis_tools.py          # Red flags, deep analysis, beginner explainer
         ├── documents.py               # Annual reports + earnings calls via RAG
         ├── announcements.py           # NSE corporate announcements
@@ -95,13 +102,17 @@ Add your function to the most relevant file in `tools/`, or create a new file.
 ```python
 # src/screener_mcp/tools/company_tools.py
 
-async def get_concall_schedule(symbol: str) -> str:
+from ..core.company_page import fetch_company_page
+from ..core.envelope import ToolResult
+
+async def get_concall_schedule(symbol: str) -> ToolResult:
     """Fetch upcoming earnings call / AGM schedule for a company."""
-    client = await get_client()
-    html = await client.get_html(f"/company/{symbol.upper()}/")
-    # parse and return a formatted string
-    ...
-    return formatted_result
+    page = await fetch_company_page(symbol)   # resolves symbols, handles standalone fallback
+    schedule = parse_schedule(page.html)
+    if not schedule:
+        return ToolResult(data={"events": []}, warnings=page.warnings, meta=page.meta,
+                          missing_fields=["events"], reason="No schedule on the source page.")
+    return ToolResult(data={"events": schedule}, warnings=page.warnings, meta=page.meta)
 ```
 
 ### Step 2 — Register it in server.py
@@ -112,7 +123,7 @@ from .tools.company_tools import get_concall_schedule as _get_concall_schedule
 
 # server.py — add a @mcp.tool() definition
 @mcp.tool()
-async def get_concall_schedule(symbol: str) -> str:
+async def get_concall_schedule(symbol: str) -> dict:
     """
     Get the upcoming earnings call or AGM schedule for a company.
 
@@ -132,8 +143,10 @@ async def get_concall_schedule(symbol: str) -> str:
 
 ### Rules
 
-- **Always wrap with `_safe(...)`** — gives clean error messages instead of stack traces
-- **Return a plain string** — markdown formatting is fine and preferred
+- **Always wrap with `_safe(...)`**. It turns every return value into the standard envelope (`status` / `partial` / `warnings` / `data`) and every exception into a structured error
+- **Return a `ToolResult`** (or a dict, or a markdown string for report-style tools). Never return blanks that look like real values. Use `None`, list the field in `missing_fields`, and give a `reason`
+- **Raise `ToolError`** for expected failures (bad input, not found). Put anything the caller can act on in its keyword details, such as `candidates=[...]`
+- **Fetch company pages through `fetch_company_page`** so symbol resolution and the consolidated → standalone fallback apply everywhere
 - **Write a clear docstring** — Claude uses it to decide when and how to call your tool; include an example
 - **No login for pure data tools** — if your tool needs auth, add the `_LOGIN_REQUIRED_MSG` pattern (see `screening_tools.py` for reference)
 - **Keep it focused** — one tool, one job; don't add optional complexity upfront

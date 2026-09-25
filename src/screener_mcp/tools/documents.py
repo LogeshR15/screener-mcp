@@ -10,8 +10,9 @@ import re
 
 from bs4 import BeautifulSoup
 
-from ..client import get_client
-from ..core.nse_client import get_nse_client
+from ..core.company_page import fetch_company_page
+from ..core.envelope import ToolError, ToolResult
+from ..core.nse_client import NSEError, get_nse_client
 from ..core.rag import process_document, query_document, query_documents
 from ..core.vector_store import get_vector_store
 
@@ -115,18 +116,41 @@ def _parse_earnings_calls(html: str) -> list[dict]:
     return transcripts
 
 
-async def get_document_list(symbol: str) -> str:
+def _freshness_warnings(label: str, status: dict) -> list[str]:
+    f = status.get("freshness") or {}
+    if f.get("source_changed"):
+        return [f"{label}: the source PDF appears to have changed since it was indexed "
+                f"(indexed {f.get('last_indexed_at')}). Pass force_reindex=True to rebuild."]
+    if status.get("status") == "cached" and not f.get("last_indexed_at"):
+        return [f"{label}: cached index predates freshness tracking — age unknown. "
+                "Pass force_reindex=True to rebuild and start tracking."]
+    return []
+
+
+def _source_info(status: dict) -> str:
+    f = status.get("freshness") or {}
+    if status["status"] == "cached":
+        when = f.get("last_indexed_at") or "unknown time"
+        return f"cached index ({status['chunks']} chunks, indexed {when})"
+    return f"freshly indexed ({status['chunks']} chunks across {status.get('pages', '?')} pages)"
+
+
+async def get_document_list(symbol: str) -> ToolResult:
     """List all available annual reports and earnings call transcripts for a company."""
-    client = await get_client()
     nse = await get_nse_client()
 
-    html = await client.get_html(f"/company/{symbol.upper()}/consolidated/")
+    page = await fetch_company_page(symbol, "consolidated")
+    symbol, html = page.symbol, page.html
     screener_reports = _parse_annual_reports(html)
     screener_calls = _parse_earnings_calls(html)
 
     nse_reports = []
+    nse_warning = []
     if not screener_reports:
-        nse_reports = await nse.get_annual_reports(symbol)
+        try:
+            nse_reports = await nse.get_annual_reports(symbol)
+        except NSEError as e:
+            nse_warning = [f"NSE annual-report lookup failed ({e}) — list may be incomplete."]
 
     all_reports = screener_reports or nse_reports
     all_calls = screener_calls
@@ -159,7 +183,13 @@ async def get_document_list(symbol: str) -> str:
     lines.append("`analyze_earnings_call(symbol, quarter, question)` to ask questions about these documents.")
     lines.append("You can also pass `pdf_url` directly if you have the link.")
 
-    return "\n".join(lines)
+    return ToolResult(
+        data={"report": "\n".join(lines)},
+        warnings=page.warnings + nse_warning,
+        partial=bool(nse_warning),
+        reason=nse_warning[0] if nse_warning else None,
+        meta=page.meta,
+    )
 
 
 async def analyze_annual_report(
@@ -167,7 +197,8 @@ async def analyze_annual_report(
     year: int,
     question: str,
     pdf_url: str = None,
-) -> str:
+    force_reindex: bool = False,
+) -> ToolResult:
     """
     Ask any question about a company's annual report using semantic search over the PDF.
 
@@ -176,42 +207,55 @@ async def analyze_annual_report(
     if not question.strip():
         question = "Summarize the key business highlights, financial performance, risks, and management commentary from this annual report."
 
+    warnings: list[str] = []
+    symbol = symbol.upper().strip()
     if not pdf_url:
-        client = await get_client()
-        html = await client.get_html(f"/company/{symbol.upper()}/consolidated/")
+        page = await fetch_company_page(symbol, "consolidated")
+        symbol, html = page.symbol, page.html
+        warnings += page.warnings
         reports = _parse_annual_reports(html)
 
         if not reports:
             nse = await get_nse_client()
-            reports = await nse.get_annual_reports(symbol)
+            try:
+                reports = await nse.get_annual_reports(symbol)
+            except NSEError as e:
+                warnings.append(f"NSE annual-report lookup failed ({e}).")
 
         matched = [r for r in reports if str(year) in str(r.get("year", ""))]
         if not matched:
             available = sorted({r.get("year") for r in reports}, reverse=True)
-            return (
-                f"**Annual report for {symbol.upper()} ({year}) not found.**\n\n"
-                f"Available years: {', '.join(str(y) for y in available) or 'None found'}\n\n"
-                f"Use `get_document_list('{symbol}')` to see what's available, or pass `pdf_url` directly."
+            raise ToolError(
+                (
+                    f"**Annual report for {symbol.upper()} ({year}) not found.**\n\n"
+                    f"Available years: {', '.join(str(y) for y in available) or 'None found'}\n\n"
+                    f"Use `get_document_list('{symbol}')` to see what's available, or pass `pdf_url` directly."
+                ),
+                "not_found",
             )
         pdf_url = matched[0]["url"]
 
-    collection_name = f"{symbol.upper()}_{year}_annual"
+    collection_name = f"{symbol}_{year}_annual"
 
     status = await process_document(
         pdf_url,
         collection_name,
-        extra_metadata={"symbol": symbol.upper(), "doc_type": "annual_report", "label": str(year)},
+        force=force_reindex,
+        extra_metadata={"symbol": symbol, "doc_type": "annual_report", "label": str(year)},
     )
     if status["status"] == "error":
-        return (
-            f"**Failed to process annual report PDF.**\n\n"
-            f"Error: {status.get('error')}\n"
-            f"URL: {pdf_url}\n\n"
-            f"Common causes:\n"
-            f"  - PDF is scanned/image-only (no machine-readable text)\n"
-            f"  - URL requires authentication\n"
-            f"  - pdfplumber or sentence-transformers not installed\n\n"
-            f"Run: `pip install pdfplumber sentence-transformers chromadb`"
+        raise ToolError(
+            (
+                f"**Failed to process annual report PDF.**\n\n"
+                f"Error: {status.get('error')}\n"
+                f"URL: {pdf_url}\n\n"
+                f"Common causes:\n"
+                f"  - PDF is scanned/image-only (no machine-readable text)\n"
+                f"  - URL requires authentication\n"
+                f"  - pdfplumber or sentence-transformers not installed\n\n"
+                f"Run: `pip install pdfplumber sentence-transformers chromadb`"
+            ),
+            "document_error",
         )
 
     chunks = await query_document(collection_name, question, top_k=5)
@@ -222,13 +266,10 @@ async def analyze_annual_report(
         f"[Excerpt {i} — Pages {c['metadata'].get('pages', '?')}]\n{c['text']}"
         for i, c in enumerate(chunks, 1)
     )
-    source_info = (
-        f"cached ({status['chunks']} chunks)"
-        if status["status"] == "cached"
-        else f"freshly indexed ({status['chunks']} chunks across {status.get('pages', '?')} pages)"
-    )
+    source_info = _source_info(status)
+    warnings += _freshness_warnings(f"Annual Report {year}", status)
 
-    return f"""# Annual Report Analysis — {symbol.upper()} ({year})
+    report = f"""# Annual Report Analysis — {symbol} ({year})
 
 **Question:** {question}
 **Document:** Annual Report {year} | {source_info}
@@ -246,6 +287,10 @@ Structure your response as:
 3. **Page References** — cite page numbers where relevant
 4. **Caveats** — anything incomplete or that warrants a closer look at the full report
 """
+    return ToolResult(
+        data={"report": report, "document": {"url": pdf_url, "freshness": status.get("freshness")}},
+        warnings=warnings,
+    )
 
 
 _FY_QUARTER_RE = re.compile(r"^Q([1-4])FY(\d{2,4})$")
@@ -282,7 +327,8 @@ async def analyze_earnings_call(
     quarter: str,
     question: str,
     pdf_url: str = None,
-) -> str:
+    force_reindex: bool = False,
+) -> ToolResult:
     """
     Ask any question about an earnings call transcript.
 
@@ -292,10 +338,13 @@ async def analyze_earnings_call(
         question = "What did management say about revenue, margins, business outlook, and key risks?"
 
     quarter_clean = quarter.upper().replace(" ", "")
+    warnings: list[str] = []
+    symbol = symbol.upper().strip()
 
     if not pdf_url:
-        client = await get_client()
-        html = await client.get_html(f"/company/{symbol.upper()}/consolidated/")
+        page = await fetch_company_page(symbol, "consolidated")
+        symbol, html = page.symbol, page.html
+        warnings += page.warnings
         calls = _parse_earnings_calls(html)
 
         candidates = {quarter_clean} | _quarter_to_month_labels(quarter_clean)
@@ -305,31 +354,41 @@ async def analyze_earnings_call(
         ]
         if not matched and calls:
             available = [c.get("quarter") for c in calls]
-            return (
-                f"**Earnings call for {symbol.upper()} ({quarter}) not found.**\n\n"
-                f"Available quarters: {', '.join(available)}\n\n"
-                f"Use `get_document_list('{symbol}')` to see all transcripts, or pass `pdf_url` directly."
+            raise ToolError(
+                (
+                    f"**Earnings call for {symbol.upper()} ({quarter}) not found.**\n\n"
+                    f"Available quarters: {', '.join(available)}\n\n"
+                    f"Use `get_document_list('{symbol}')` to see all transcripts, or pass `pdf_url` directly."
+                ),
+                "not_found",
             )
         if not matched:
-            return (
-                f"**No earnings call transcripts found for {symbol.upper()} on Screener.in.**\n\n"
-                f"You can pass the PDF URL directly via `pdf_url` parameter."
+            raise ToolError(
+                (
+                    f"**No earnings call transcripts found for {symbol.upper()} on Screener.in.**\n\n"
+                    f"You can pass the PDF URL directly via `pdf_url` parameter."
+                ),
+                "not_found",
             )
         pdf_url = matched[0]["url"]
 
-    collection_name = f"{symbol.upper()}_{quarter_clean}_transcript"
+    collection_name = f"{symbol}_{quarter_clean}_transcript"
 
     status = await process_document(
         pdf_url,
         collection_name,
-        extra_metadata={"symbol": symbol.upper(), "doc_type": "earnings_call", "label": quarter_clean},
+        force=force_reindex,
+        extra_metadata={"symbol": symbol, "doc_type": "earnings_call", "label": quarter_clean},
     )
     if status["status"] == "error":
-        return (
-            f"**Failed to process earnings call transcript.**\n\n"
-            f"Error: {status.get('error')}\n"
-            f"URL: {pdf_url}\n\n"
-            f"Run: `pip install pdfplumber sentence-transformers chromadb`"
+        raise ToolError(
+            (
+                f"**Failed to process earnings call transcript.**\n\n"
+                f"Error: {status.get('error')}\n"
+                f"URL: {pdf_url}\n\n"
+                f"Run: `pip install pdfplumber sentence-transformers chromadb`"
+            ),
+            "document_error",
         )
 
     chunks = await query_document(collection_name, question, top_k=5)
@@ -340,9 +399,10 @@ async def analyze_earnings_call(
         f"[Excerpt {i} — Pages {c['metadata'].get('pages', '?')}]\n{c['text']}"
         for i, c in enumerate(chunks, 1)
     )
-    source_info = "cached" if status["status"] == "cached" else f"freshly indexed ({status['chunks']} chunks)"
+    source_info = _source_info(status)
+    warnings += _freshness_warnings(f"Earnings call {quarter_clean}", status)
 
-    return f"""# Earnings Call Analysis — {symbol.upper()} ({quarter})
+    report = f"""# Earnings Call Analysis — {symbol} ({quarter})
 
 **Question:** {question}
 **Document:** Earnings Call Transcript {quarter} | {source_info}
@@ -361,6 +421,10 @@ Focus on:
 - Any surprises vs. expectations
 - Forward-looking statements and their credibility
 """
+    return ToolResult(
+        data={"report": report, "document": {"url": pdf_url, "freshness": status.get("freshness")}},
+        warnings=warnings,
+    )
 
 
 async def ask_company_research(
@@ -383,28 +447,36 @@ async def ask_company_research(
     `max_annual_reports` annual reports and `max_earnings_calls` transcripts,
     then runs one semantic search across all of them together.
     """
-    symbol = symbol.upper()
-    client = await get_client()
-    html = await client.get_html(f"/company/{symbol}/consolidated/")
+    page = await fetch_company_page(symbol, "consolidated")
+    symbol, html = page.symbol, page.html
 
     reports = _parse_annual_reports(html) if include_annual_reports else []
+    nse_warning = []
     if not reports and include_annual_reports:
         nse = await get_nse_client()
-        reports = await nse.get_annual_reports(symbol)
+        try:
+            reports = await nse.get_annual_reports(symbol)
+        except NSEError as e:
+            nse_warning = [f"NSE annual-report lookup failed ({e}) — annual reports may be missing."]
     calls = _parse_earnings_calls(html) if include_earnings_calls else []
 
     reports = sorted(reports, key=lambda r: r.get("year", ""), reverse=True)[:max_annual_reports]
     calls = calls[:max_earnings_calls]
 
     if not reports and not calls:
-        return (
-            f"**No documents found for {symbol}.**\n\n"
-            f"Use `get_document_list('{symbol}')` to check what's available."
+        raise ToolError(
+            (
+                f"**No documents found for {symbol}.**\n\n"
+                f"Use `get_document_list('{symbol}')` to check what's available."
+            ),
+            "not_found",
         )
 
     collection_names: list[str] = []
     indexed_labels: list[str] = []
     errors: list[str] = []
+    documents: list[dict] = []
+    warnings: list[str] = list(page.warnings) + nse_warning
 
     for r in reports:
         name = f"{symbol}_{r.get('year', 'Unknown')}_annual"
@@ -417,6 +489,8 @@ async def ask_company_research(
             continue
         collection_names.append(name)
         indexed_labels.append(f"Annual Report {r.get('year')}")
+        documents.append({"label": f"Annual Report {r.get('year')}", "url": r["url"], "freshness": status.get("freshness")})
+        warnings += _freshness_warnings(f"Annual Report {r.get('year')}", status)
 
     for c in calls:
         quarter = c.get("quarter", "Unknown").upper().replace(" ", "")
@@ -430,11 +504,16 @@ async def ask_company_research(
             continue
         collection_names.append(name)
         indexed_labels.append(f"Earnings Call {quarter}")
+        documents.append({"label": f"Earnings Call {quarter}", "url": c["url"], "freshness": status.get("freshness")})
+        warnings += _freshness_warnings(f"Earnings Call {quarter}", status)
 
     if not collection_names:
-        return (
-            f"**Failed to index any documents for {symbol}.**\n\n"
-            + "\n".join(f"  - {e}" for e in errors)
+        raise ToolError(
+            (
+                f"**Failed to index any documents for {symbol}.**\n\n"
+                + "\n".join(f"  - {e}" for e in errors)
+            ),
+            "document_error",
         )
 
     chunks = await query_documents(collection_names, question, top_k=8, top_k_per_collection=4)
@@ -450,7 +529,7 @@ async def ask_company_research(
 
     note = f"\n\n**Note:** could not index — {'; '.join(errors)}" if errors else ""
 
-    return f"""# Whole-Company Research — {symbol}
+    report = f"""# Whole-Company Research — {symbol}
 
 **Question:** {question}
 **Documents searched:** {', '.join(indexed_labels)}{note}
@@ -469,6 +548,12 @@ Structure your response as:
 3. **Supporting Evidence** — cite which document/period each point comes from
 4. **Caveats** — anything incomplete or that warrants checking the full document
 """
+    return ToolResult(
+        data={"report": report, "documents": documents},
+        warnings=warnings + [f"Could not index {e}" for e in errors],
+        partial=bool(errors),
+        reason="Some documents could not be indexed." if errors else None,
+    )
 
 
 async def search_market_commentary(

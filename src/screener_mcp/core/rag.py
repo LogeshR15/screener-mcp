@@ -12,8 +12,10 @@ Flow:
 
 import asyncio
 import hashlib
+import json
 import logging
 import re
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -24,6 +26,8 @@ from .vector_store import get_vector_store
 logger = logging.getLogger(__name__)
 
 _PDF_CACHE_DIR = Path.home() / ".screener-mcp" / "pdf_cache"
+# collection name → {source_url, last_indexed_at, content_sha256, etag, last_modified, content_length}
+_MANIFEST_PATH = Path.home() / ".screener-mcp" / "index_manifest.json"
 _CHUNK_WORDS = 500
 _OVERLAP_WORDS = 60
 
@@ -52,14 +56,33 @@ def _embed_one(text: str) -> list[float]:
     return _embed([text])[0]
 
 
-async def _download_pdf(url: str) -> bytes:
+def _load_manifest() -> dict:
+    try:
+        return json.loads(_MANIFEST_PATH.read_text())
+    except (OSError, ValueError):
+        return {}
+
+
+def _save_manifest_entry(collection_name: str, entry: dict):
+    manifest = _load_manifest()
+    manifest[collection_name] = entry
+    _MANIFEST_PATH.parent.mkdir(parents=True, exist_ok=True)
+    _MANIFEST_PATH.write_text(json.dumps(manifest, indent=2))
+
+
+def get_index_info(collection_name: str) -> Optional[dict]:
+    return _load_manifest().get(collection_name)
+
+
+async def _download_pdf(url: str, force: bool = False) -> tuple[bytes, dict]:
+    """Return (pdf bytes, response validators). Disk-cached by URL unless force."""
     _PDF_CACHE_DIR.mkdir(parents=True, exist_ok=True)
     url_hash = hashlib.md5(url.encode()).hexdigest()
     cache_path = _PDF_CACHE_DIR / f"{url_hash}.pdf"
 
-    if cache_path.exists():
+    if cache_path.exists() and not force:
         logger.info(f"PDF cache hit: {url_hash}")
-        return cache_path.read_bytes()
+        return cache_path.read_bytes(), {}
 
     headers = {
         "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
@@ -69,9 +92,76 @@ async def _download_pdf(url: str) -> bytes:
         resp = await client.get(url, headers=headers)
         resp.raise_for_status()
         data = resp.content
+        validators = _validators(resp.headers)
 
     cache_path.write_bytes(data)
-    return data
+    return data, validators
+
+
+def _validators(headers) -> dict:
+    return {
+        "etag": headers.get("ETag"),
+        "last_modified": headers.get("Last-Modified"),
+        "content_length": headers.get("Content-Length"),
+    }
+
+
+async def check_source_changed(url: str, info: dict) -> Optional[bool]:
+    """HEAD the source and compare ETag / Last-Modified / Content-Length with
+    what was recorded at index time. None = can't tell (no validators, HEAD
+    unsupported, network error)."""
+    recorded = {k: info.get(k) for k in ("etag", "last_modified", "content_length") if info.get(k)}
+    if not recorded:
+        return None
+    try:
+        async with httpx.AsyncClient(follow_redirects=True, timeout=10.0) as client:
+            resp = await client.head(url, headers={"User-Agent": "Mozilla/5.0"})
+        if resp.status_code >= 400:
+            return None
+        current = _validators(resp.headers)
+    except httpx.HTTPError:
+        return None
+    compared = [(k, v) for k, v in recorded.items() if current.get(k)]
+    if not compared:
+        return None
+    return any(current[k] != v for k, v in compared)
+
+
+def _age_hours(iso: Optional[str]) -> Optional[float]:
+    if not iso:
+        return None
+    try:
+        return round((datetime.now(timezone.utc) - datetime.fromisoformat(iso)).total_seconds() / 3600, 1)
+    except ValueError:
+        return None
+
+
+async def freshness(collection_name: str, url: Optional[str], check_source: bool = True) -> dict:
+    """Freshness block for a cached index: when it was built, from what, and
+    whether the source looks different now."""
+    info = get_index_info(collection_name)
+    if not info:
+        return {
+            "last_indexed_at": None,
+            "content_sha256": None,
+            "source_changed": None,
+            "note": "Indexed before freshness tracking existed — age unknown. Pass force_reindex=True to rebuild.",
+        }
+    out = {
+        "last_indexed_at": info.get("last_indexed_at"),
+        "age_hours": _age_hours(info.get("last_indexed_at")),
+        "source_url": info.get("source_url"),
+        "content_sha256": info.get("content_sha256"),
+        "etag": info.get("etag"),
+        "last_modified": info.get("last_modified"),
+        "source_changed": None,
+    }
+    if url and info.get("source_url") and url != info.get("source_url"):
+        out["source_changed"] = True
+        out["note"] = "The document link differs from the one that was indexed."
+    elif check_source and (url or info.get("source_url")):
+        out["source_changed"] = await check_source_changed(url or info["source_url"], info)
+    return out
 
 
 def _parse_pdf_sync(pdf_bytes: bytes) -> list[dict]:
@@ -139,16 +229,19 @@ async def process_document(
     searching across multiple documents at once.
 
     Returns:
-      {"status": "cached"|"processed"|"error", "chunks": N, "pages": N}
+      {"status": "cached"|"processed"|"error", "chunks": N, "pages": N,
+       "freshness": {last_indexed_at, content_sha256, source_changed, ...}}
+
+    force=True re-downloads the PDF (bypassing the disk cache) and rebuilds the index.
     """
     store = get_vector_store()
 
     if not force and store.collection_exists(collection_name):
         n = store.count(collection_name)
-        return {"status": "cached", "chunks": n}
+        return {"status": "cached", "chunks": n, "freshness": await freshness(collection_name, url)}
 
     try:
-        pdf_bytes = await _download_pdf(url)
+        pdf_bytes, validators = await _download_pdf(url, force=force)
 
         loop = asyncio.get_event_loop()
         pages = await loop.run_in_executor(None, _parse_pdf_sync, pdf_bytes)
@@ -175,7 +268,20 @@ async def process_document(
         store.delete_collection(collection_name)
         store.add_documents(collection_name, texts, embeddings, metadatas, ids)
 
-        return {"status": "processed", "chunks": len(chunks), "pages": len(pages)}
+        entry = {
+            "source_url": url,
+            "last_indexed_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "content_sha256": hashlib.sha256(pdf_bytes).hexdigest(),
+            **validators,
+        }
+        _save_manifest_entry(collection_name, entry)
+
+        return {
+            "status": "processed",
+            "chunks": len(chunks),
+            "pages": len(pages),
+            "freshness": {**entry, "age_hours": 0.0, "source_changed": False},
+        }
 
     except Exception as e:
         logger.error(f"Document processing error: {e}")

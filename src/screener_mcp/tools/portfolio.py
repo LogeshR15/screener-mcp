@@ -11,7 +11,8 @@ import logging
 from pathlib import Path
 from typing import Optional
 
-from ..client import get_client
+from ..core.company_page import fetch_company_page
+from ..core.envelope import ToolError, ToolResult
 from ..parsers.company import parse_overview
 
 logger = logging.getLogger(__name__)
@@ -46,9 +47,8 @@ def _parse_num(value) -> Optional[float]:
 
 async def _live_price(symbol: str) -> Optional[float]:
     try:
-        client = await get_client()
-        html = await client.get_html(f"/company/{symbol.upper()}/consolidated/")
-        overview = parse_overview(html)
+        page = await fetch_company_page(symbol, "consolidated")
+        overview = parse_overview(page.html)
         return _parse_num(overview.get("current_price"))
     except Exception as e:
         logger.warning(f"Failed to fetch live price for {symbol}: {e}")
@@ -70,7 +70,7 @@ async def add_portfolio_stock(symbol: str, quantity: float, avg_price: float) ->
     """
     symbol = symbol.upper().strip()
     if quantity <= 0 or avg_price <= 0:
-        return "**Error:** `quantity` and `avg_price` must both be positive."
+        raise ToolError("`quantity` and `avg_price` must both be positive.", "invalid_input")
 
     data = _load()
     holdings = data["holdings"]
@@ -113,18 +113,18 @@ async def update_portfolio_stock(
     holdings = data["holdings"]
 
     if symbol not in holdings:
-        return f"**{symbol} is not in your portfolio.** Use `add_portfolio_stock` to add it first."
+        raise ToolError(f"{symbol} is not in your portfolio. Use add_portfolio_stock to add it first.", "not_found")
 
     if quantity is None and avg_price is None:
-        return "**Error:** Provide at least one of `quantity` or `avg_price` to update."
+        raise ToolError("Provide at least one of `quantity` or `avg_price` to update.", "invalid_input")
 
     if quantity is not None:
         if quantity <= 0:
-            return "**Error:** `quantity` must be positive. Use `remove_portfolio_stock` to exit a position entirely."
+            raise ToolError("`quantity` must be positive. Use `remove_portfolio_stock` to exit a position entirely.", "invalid_input")
         holdings[symbol]["quantity"] = quantity
     if avg_price is not None:
         if avg_price <= 0:
-            return "**Error:** `avg_price` must be positive."
+            raise ToolError("`avg_price` must be positive.", "invalid_input")
         holdings[symbol]["avg_price"] = avg_price
 
     _save(data)
@@ -137,13 +137,13 @@ async def remove_portfolio_stock(symbol: str) -> str:
     symbol = symbol.upper().strip()
     data = _load()
     if symbol not in data["holdings"]:
-        return f"**{symbol} is not in your portfolio.**"
+        raise ToolError(f"{symbol} is not in your portfolio.", "not_found")
     del data["holdings"][symbol]
     _save(data)
     return f"**Removed {symbol} from portfolio.**"
 
 
-async def get_portfolio() -> str:
+async def get_portfolio() -> ToolResult:
     """
     View your portfolio with live prices, P&L, and per-holding weight.
 
@@ -223,4 +223,9 @@ async def get_portfolio() -> str:
         lines.append("")
         lines.append(f"**Note:** Could not fetch live price for: {', '.join(price_errors)} (invested value only shown).")
 
-    return "\n".join(lines)
+    return ToolResult(
+        data={"report": "\n".join(lines)},
+        missing_fields=[f"{sym}.price" for sym in price_errors],
+        reason=(f"Live price unavailable for {', '.join(price_errors)} — totals exclude their current "
+                "value, so portfolio P&L is incomplete.") if price_errors else None,
+    )

@@ -23,6 +23,15 @@ def _xbrl_tag(xml: str, tag: str) -> str:
     m = re.search(rf"<in-bse-co:{tag}[^>]*>([^<]*)</in-bse-co:{tag}>", xml)
     return m.group(1).strip() if m else ""
 
+class NSEError(Exception):
+    """NSE's API failed or blocked the request (as opposed to returning no rows).
+
+    NSE frequently rate-limits or 403s server IPs. Callers must surface this —
+    swallowing it into an empty list made "NSE blocked us" indistinguishable
+    from "the company has no announcements".
+    """
+
+
 NSE_BASE = "https://www.nseindia.com"
 NSE_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -69,71 +78,68 @@ class NSEClient:
     async def get_json(self, path: str, params: dict = None) -> dict | list:
         await self._ensure_session()
         url = f"{NSE_BASE}{path}"
-        resp = await self._client.get(url, params=params or {})
-        resp.raise_for_status()
-        return resp.json()
+        try:
+            resp = await self._client.get(url, params=params or {})
+            resp.raise_for_status()
+            return resp.json()
+        except httpx.HTTPStatusError as e:
+            code = e.response.status_code
+            hint = " (NSE often blocks server/cloud IPs or rate-limits bursts)" if code in (401, 403, 429) else ""
+            raise NSEError(f"NSE API returned HTTP {code} for {path}{hint}") from e
+        except httpx.HTTPError as e:
+            raise NSEError(f"Could not reach NSE API ({type(e).__name__}) for {path}") from e
+        except ValueError as e:
+            raise NSEError(f"NSE API returned a non-JSON response for {path} — likely a block/captcha page") from e
 
     async def get_annual_reports(self, symbol: str) -> list[dict]:
-        """Fetch annual report links for a company from NSE."""
-        try:
-            data = await self.get_json(
-                "/api/annual-reports",
-                params={"index": "equities", "symbol": symbol.upper()},
-            )
-            reports = data.get("data", []) if isinstance(data, dict) else (data or [])
-            result = []
-            for r in reports:
-                url = r.get("fileName") or r.get("pdfLink") or ""
-                if not url:
-                    continue
-                to_yr = r.get("toYr", "")
-                year = to_yr or r.get("fromYr", "")
-                result.append({
-                    "year": year,
-                    "from_date": r.get("fromYr", ""),
-                    "to_date": to_yr,
-                    "title": r.get("companyName", "Annual Report"),
-                    "url": url,
-                    "type": "annual_report",
-                    "exchange": "NSE",
-                })
-            return result
-        except Exception as e:
-            logger.warning(f"NSE annual reports failed for {symbol}: {e}")
-            return []
+        """Fetch annual report links for a company from NSE. Raises NSEError on failure."""
+        data = await self.get_json(
+            "/api/annual-reports",
+            params={"index": "equities", "symbol": symbol.upper()},
+        )
+        reports = data.get("data", []) if isinstance(data, dict) else (data or [])
+        result = []
+        for r in reports:
+            url = r.get("fileName") or r.get("pdfLink") or ""
+            if not url:
+                continue
+            to_yr = r.get("toYr", "")
+            year = to_yr or r.get("fromYr", "")
+            result.append({
+                "year": year,
+                "from_date": r.get("fromYr", ""),
+                "to_date": to_yr,
+                "title": r.get("companyName", "Annual Report"),
+                "url": url,
+                "type": "annual_report",
+                "exchange": "NSE",
+            })
+        return result
 
     async def get_announcements(self, symbol: str) -> list[dict]:
-        """Fetch recent company announcements from NSE."""
-        try:
-            data = await self.get_json(
-                "/api/corporate-announcements",
-                params={"index": "equities", "symbol": symbol.upper()},
-            )
-            items = data.get("data", []) if isinstance(data, dict) else (data or [])
-            return [
-                {
-                    "date": item.get("an_dt", ""),
-                    "category": item.get("desc", ""),
-                    "headline": item.get("attchmntText", ""),
-                    "url": item.get("attchmntFile", ""),
-                    "exchange": "NSE",
-                }
-                for item in items
-            ]
-        except Exception as e:
-            logger.warning(f"NSE announcements failed for {symbol}: {e}")
-            return []
+        """Fetch recent company announcements from NSE. Raises NSEError on failure."""
+        data = await self.get_json(
+            "/api/corporate-announcements",
+            params={"index": "equities", "symbol": symbol.upper()},
+        )
+        items = data.get("data", []) if isinstance(data, dict) else (data or [])
+        return [
+            {
+                "date": item.get("an_dt", ""),
+                "category": item.get("desc", ""),
+                "headline": item.get("attchmntText", ""),
+                "url": item.get("attchmntFile", ""),
+                "exchange": "NSE",
+            }
+            for item in items
+        ]
 
     async def _get_bulk_deals_for_day(self, date_str: str, symbol: str = None) -> list[dict]:
         params = {"optionType": "bulk_deals", "from": date_str, "to": date_str}
         if symbol:
             params["symbol"] = symbol.upper()
-        try:
-            data = await self.get_json("/api/historicalOR/bulk-block-short-deals", params=params)
-            items = data.get("data", []) if isinstance(data, dict) else (data or [])
-        except Exception as e:
-            logger.warning(f"NSE bulk deals failed for {date_str}: {e}")
-            return []
+        data = await self.get_json("/api/historicalOR/bulk-block-short-deals", params=params)
+        items = data.get("data", []) if isinstance(data, dict) else (data or [])
         return [
             {
                 "date": item.get("BD_DT_DATE", ""),
@@ -156,18 +162,18 @@ class NSEClient:
     # into 365 serial round-trips to a third-party site.
     MAX_BULK_DEAL_DAYS = 30
 
-    async def get_bulk_deals(self, from_date: str, to_date: str, symbol: str = None) -> list[dict]:
+    async def get_bulk_deals(
+        self, from_date: str, to_date: str, symbol: str = None
+    ) -> tuple[list[dict], list[str], int]:
         """Fetch NSE bulk deals (trades > 0.5% of equity) for a date range.
 
-        Only the most recent `MAX_BULK_DEAL_DAYS` calendar days of the
-        requested range are actually queried (see note above).
+        Returns (rows, failed_dates, days_queried). Only the most recent
+        `MAX_BULK_DEAL_DAYS` calendar days of the requested range are queried
+        (see note above). Raises NSEError if every day failed, so a total
+        outage never reads as "no bulk deals".
         """
-        try:
-            end = datetime.strptime(to_date, "%d-%m-%Y")
-            start = datetime.strptime(from_date, "%d-%m-%Y")
-        except ValueError as e:
-            logger.warning(f"NSE bulk deals: bad date range {from_date}..{to_date}: {e}")
-            return []
+        end = datetime.strptime(to_date, "%d-%m-%Y")
+        start = datetime.strptime(from_date, "%d-%m-%Y")
 
         span_days = max((end - start).days + 1, 1)
         query_days = min(span_days, self.MAX_BULK_DEAL_DAYS)
@@ -179,8 +185,12 @@ class NSEClient:
             async with sem:
                 return await self._get_bulk_deals_for_day(d, symbol)
 
-        results = await asyncio.gather(*[_fetch(d) for d in dates])
-        return [row for day_rows in results for row in day_rows]
+        results = await asyncio.gather(*[_fetch(d) for d in dates], return_exceptions=True)
+        failed = [d for d, r in zip(dates, results) if isinstance(r, Exception)]
+        if failed and len(failed) == len(dates):
+            raise NSEError(f"All {len(dates)} daily NSE bulk-deal requests failed: {results[0]}")
+        rows = [row for r in results if not isinstance(r, Exception) for row in r]
+        return rows, failed, len(dates)
 
     # How many of the most recent filings to open and parse into full trade
     # detail. The list endpoint is one cheap call; each disclosure's XBRL is
@@ -198,15 +208,11 @@ class NSEClient:
         seller name, buy/sell, quantity, value, mode of acquisition) live in
         each filing's XBRL document, so this fetches and parses those too.
         """
-        try:
-            data = await self.get_json(
-                "/api/corporates-pit-gg",
-                params={"index": "equities", "symbol": symbol.upper()},
-            )
-            filings = data.get("data", []) if isinstance(data, dict) else (data or [])
-        except Exception as e:
-            logger.warning(f"NSE insider trading list failed for {symbol}: {e}")
-            return []
+        data = await self.get_json(
+            "/api/corporates-pit-gg",
+            params={"index": "equities", "symbol": symbol.upper()},
+        )
+        filings = data.get("data", []) if isinstance(data, dict) else (data or [])
 
         filings = filings[: self.MAX_INSIDER_FILINGS]
         sem = asyncio.Semaphore(8)
@@ -214,7 +220,7 @@ class NSEClient:
         async def _fetch_detail(filing: dict) -> dict:
             url = filing.get("xmlFileName", "")
             if not url:
-                return filing
+                return {**filing, "_detail_error": True}
             async with sem:
                 try:
                     resp = await self._client.get(url, timeout=30.0)
@@ -222,7 +228,7 @@ class NSEClient:
                     xml = resp.text
                 except Exception as e:
                     logger.warning(f"NSE insider trading XBRL fetch failed for {url}: {e}")
-                    return filing
+                    return {**filing, "_detail_error": True}
             return {
                 **filing,
                 "personName": _xbrl_tag(xml, "NameOfThePerson"),
