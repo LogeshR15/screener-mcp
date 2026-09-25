@@ -253,6 +253,10 @@ def _default_sort(filters: list[TechFilter]) -> tuple[str, bool]:
     for f in filters:
         if f.metric != "level":
             return f.metric, f.op in (">", ">=")
+    for f in filters:
+        # "Price above 200 DMA" → furthest above first; "below" → furthest below first
+        if f.lhs == "price" and f.rhs and f.rhs.startswith("dma"):
+            return f"pct_vs_{f.rhs}", f.op in (">", ">=")
     return "pct_above_52w_low", False
 
 

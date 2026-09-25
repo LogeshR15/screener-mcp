@@ -590,7 +590,11 @@ async def compare_stocks_ui(symbols: list[str] | str) -> dict:
 
     Note: use NSE trading symbols, not company names (e.g. "INFY" not "INFOSYS").
     """
-    return await _safe(_compare_stocks_ui_impl)(symbols)
+    env = await _safe(_compare_stocks_ui_impl)(symbols)
+    # The dashboard UI predates the envelope and reads `stocks` / `count` at
+    # the top level — mirror them there so it keeps rendering.
+    data = env.get("data") or {}
+    return {**env, "stocks": data.get("stocks", []), "count": data.get("count", 0)}
 
 
 async def _compare_stocks_ui_impl(symbols: list[str] | str) -> ToolResult:

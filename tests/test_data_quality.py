@@ -478,3 +478,28 @@ async def test_bse_only_company_is_a_clear_error(fake_pages):
 async def test_invalid_input_is_structured_error():
     env = await server.get_company_announcements("TCS", category="gossip")
     assert env["status"] == "error" and env["error"]["type"] == "invalid_input"
+
+
+def test_parse_real_screen_results_page():
+    """Real (trimmed) Screener screen page — same template /screen/raw/ serves."""
+    from pathlib import Path
+
+    html = (Path(__file__).parent / "fixtures" / "screen_results_page2.html").read_text()
+    d = parse_screen_results(html)
+    assert d["total_results"] == 159 and d["total_pages"] == 7
+    assert len(d["companies"]) == 3
+    cand = tt._row_to_candidate(d["companies"][0])
+    assert cand["company_id"] and cand["symbol"] and cand["name"]
+    assert isinstance(cand["fundamentals"]["Market Capitalization"], float)
+
+
+def test_level_filter_sorts_by_distance_from_dma():
+    _, technical = split_query("Price above 200 DMA")
+    assert tt._default_sort(technical) == ("pct_vs_dma200", True)
+
+
+async def test_compare_stocks_ui_keeps_top_level_stocks_for_dashboard(fake_pages):
+    fake_pages[("MSUMI", "consolidated")] = FULL_PAGE
+    env = await server.compare_stocks_ui(["MSUMI"])
+    assert env["status"] == "ok" and env["count"] == 1
+    assert env["stocks"] == env["data"]["stocks"]
