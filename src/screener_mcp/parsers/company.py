@@ -194,6 +194,31 @@ def parse_cash_flow(html: str) -> dict[str, Any]:
     return _yearly_table(soup, "cash-flow")
 
 
+def debt_to_equity(html: str) -> float | None:
+    """Borrowings ÷ (Equity Capital + Reserves) from the latest balance-sheet column.
+
+    Screener's top ratios don't include debt-to-equity, so it's derived here.
+    None when the balance sheet lacks the rows (or equity is non-positive).
+    """
+    latest: dict[str, str] = {}
+    for row in parse_balance_sheet(html).get("rows", []):
+        label = re.sub(r"[\s+]+$", "", row.get("label", "")).lower()
+        if label in ("equity capital", "reserves", "borrowings") and row.get("values"):
+            latest[label] = row["values"][-1]
+
+    def num(v):
+        try:
+            return float(re.sub(r"[^0-9.\-]", "", v or ""))
+        except ValueError:
+            return None
+
+    equity = (num(latest.get("equity capital")) or 0) + (num(latest.get("reserves")) or 0)
+    borrowings = num(latest.get("borrowings"))
+    if borrowings is None or equity <= 0:
+        return None
+    return round(borrowings / equity, 2)
+
+
 def parse_ratios(html: str) -> dict[str, Any]:
     """Historical key ratios table (PE, ROCE, ROE, etc. year by year)."""
     soup = BeautifulSoup(html, "lxml")

@@ -3,8 +3,9 @@ Commodity price analysis — analytical context for major commodities
 traded on MCX/NCDEX and their impact on Indian listed companies.
 """
 
+import asyncio
 import logging
-import re
+from datetime import datetime, timezone
 
 import httpx
 
@@ -137,23 +138,85 @@ _COMMODITY_INFO: dict[str, dict] = {
 }
 
 
-async def _fetch_mcx_price(mcx_symbol: str) -> str | None:
-    """Attempt to fetch current price from MCX India (best-effort)."""
+# International benchmark futures (Yahoo Finance chart API — public, no key).
+# MCX's own site blocks scripted access, so the old MCX scrape almost never
+# returned a price. These are the global contracts MCX prices track; the INR
+# figure is a straight FX conversion and excludes import duty / GST, so it
+# will sit below the MCX quote.
+# mcx_symbol → (yahoo symbol, contract, unit, INR conversion: (factor, inr unit) or None)
+_OZ_PER_10G = 10 / 31.1035
+_BENCHMARKS: dict[str, tuple[str, str, str, tuple[float, str] | None]] = {
+    "GOLD": ("GC=F", "COMEX gold futures", "USD/troy oz", (_OZ_PER_10G, "₹/10g")),
+    "SILVER": ("SI=F", "COMEX silver futures", "USD/troy oz", (1000 / 31.1035, "₹/kg")),
+    "CRUDEOIL": ("BZ=F", "ICE Brent crude futures", "USD/barrel", (1.0, "₹/barrel")),
+    "COPPER": ("HG=F", "COMEX copper futures", "USD/lb", (2.20462, "₹/kg")),
+    "ALUMINIUM": ("ALI=F", "COMEX aluminium futures", "USD/tonne", (0.001, "₹/kg")),
+    "ZINC": ("ZNC=F", "COMEX zinc futures", "USD/tonne", (0.001, "₹/kg")),
+    "COTTON": ("CT=F", "ICE cotton No.2 futures", "US cents/lb", None),
+    "NATURALGAS": ("NG=F", "NYMEX Henry Hub natural gas futures", "USD/mmBtu", (1.0, "₹/mmBtu")),
+    "STEEL": ("HRC=F", "CME US Midwest hot-rolled coil futures", "USD/short ton", None),
+}
+
+
+async def _yahoo_chart(symbol: str, years: int) -> dict:
+    url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
+    params = {"range": f"{max(1, min(years, 10))}y", "interval": "1wk"}
+    async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
+        resp = await client.get(url, params=params, headers={"User-Agent": "Mozilla/5.0"})
+        resp.raise_for_status()
+        result = (resp.json().get("chart") or {}).get("result") or []
+    if not result:
+        raise ValueError(f"no data for {symbol}")
+    r = result[0]
+    closes = [c for c in (r.get("indicators", {}).get("quote", [{}])[0].get("close") or []) if c is not None]
+    if not closes:
+        raise ValueError(f"no closes for {symbol}")
+    return {"meta": r.get("meta", {}), "closes": closes, "timestamps": r.get("timestamp") or []}
+
+
+def _pct(a: float, b: float) -> float | None:
+    return round((a / b - 1) * 100, 2) if b else None
+
+
+async def _fetch_benchmark(mcx_symbol: str, years: int) -> tuple[dict | None, str | None]:
+    """→ (benchmark dict, None) or (None, reason it's unavailable)."""
+    spec = _BENCHMARKS.get(mcx_symbol)
+    if not spec:
+        return None, "No free public benchmark feed covers this commodity."
+    symbol, contract, unit, inr = spec
     try:
-        url = f"https://www.mcxindia.com/market-data/commodity-futures/{mcx_symbol.lower()}"
-        async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
-            resp = await client.get(url, headers={"User-Agent": "Mozilla/5.0"})
-            if resp.status_code != 200:
-                return None
-            match = re.search(r'"lastPrice"\s*:\s*"?([\d,]+\.?\d*)"?', resp.text)
-            if match:
-                return match.group(1).replace(",", "")
-    except Exception:
-        pass
-    return None
+        chart, fx = await asyncio.gather(_yahoo_chart(symbol, years), _yahoo_chart("INR=X", 1))
+    except Exception as e:
+        logger.warning("benchmark fetch failed for %s: %s", symbol, e)
+        return None, f"Benchmark price feed unavailable ({type(e).__name__})."
+
+    closes = chart["closes"]
+    price = chart["meta"].get("regularMarketPrice") or closes[-1]
+    usd_inr = fx["meta"].get("regularMarketPrice") or fx["closes"][-1]
+    ts = chart["meta"].get("regularMarketTime")
+    out = {
+        "contract": contract,
+        "source_symbol": symbol,
+        "price": round(price, 4),
+        "unit": unit,
+        "as_of": datetime.fromtimestamp(ts, timezone.utc).strftime("%Y-%m-%d") if ts else None,
+        "change_4w_pct": _pct(price, closes[-5]) if len(closes) > 5 else None,
+        "change_52w_pct": _pct(price, closes[-53]) if len(closes) > 53 else None,
+        "change_period_pct": _pct(price, closes[0]),
+        "period_years": years,
+        "period_high": round(max(closes), 4),
+        "period_low": round(min(closes), 4),
+        "usd_inr": round(usd_inr, 4),
+    }
+    if inr:
+        factor, inr_unit = inr
+        out["approx_inr"] = round(price * factor * usd_inr, 2)
+        out["approx_inr_unit"] = inr_unit
+        out["approx_inr_basis"] = "FX conversion of the international benchmark; excludes import duty and GST, so below the MCX price"
+    return out, None
 
 
-async def get_commodity_prices(commodity: str, years: int = 5) -> str:
+async def get_commodity_prices(commodity: str, years: int = 5) -> ToolResult:
     """
     Get commodity price context and impact analysis for Indian listed companies.
 
@@ -173,16 +236,24 @@ async def get_commodity_prices(commodity: str, years: int = 5) -> str:
     info = _COMMODITY_INFO[key]
     impact = info["impact"]
 
-    current_price = await _fetch_mcx_price(info["mcx_symbol"])
+    years = max(1, min(int(years or 5), 10))
+    benchmark, unavailable = await _fetch_benchmark(info["mcx_symbol"], years)
 
     lines = [
         f"# {info['name']} — Commodity Analysis",
-        f"Exchange: MCX India | Unit: {info['unit']} | Context period: {years} years",
+        f"Indian contract: MCX {info['mcx_symbol']} ({info['unit']}) | Context period: {years} years",
         "",
     ]
 
-    if current_price:
-        lines.append(f"**MCX Spot Price (approx):** {info['unit'].split('/')[0]} {current_price}")
+    if benchmark:
+        b = benchmark
+        lines.append(f"**{b['contract']}:** {b['price']} {b['unit']} (as of {b['as_of']})")
+        moves = [f"4w {b['change_4w_pct']:+.1f}%" if b["change_4w_pct"] is not None else None,
+                 f"52w {b['change_52w_pct']:+.1f}%" if b["change_52w_pct"] is not None else None,
+                 f"{years}y {b['change_period_pct']:+.1f}%" if b["change_period_pct"] is not None else None]
+        lines.append(f"**Moves:** {' | '.join(m for m in moves if m)} | {years}y range {b['period_low']}–{b['period_high']}")
+        if b.get("approx_inr"):
+            lines.append(f"**≈ {b['approx_inr']:,} {b['approx_inr_unit']}** at USD/INR {b['usd_inr']} (before import duty/GST — MCX trades higher)")
         lines.append("")
 
     lines += [
@@ -225,10 +296,7 @@ async def get_commodity_prices(commodity: str, years: int = 5) -> str:
     ]
 
     return ToolResult(
-        data={"report": "\n".join(lines), "mcx_price": current_price or None},
-        missing_fields=[] if current_price else ["mcx_price"],
-        reason=None if current_price else (
-            "Live MCX price couldn't be fetched (best-effort source) — the analysis below is "
-            "context only; check MCX directly for the current price."
-        ),
+        data={"commodity": key, "benchmark": benchmark, "report": "\n".join(lines)},
+        missing_fields=[] if benchmark else ["benchmark_price"],
+        reason=None if benchmark else f"{unavailable} The analysis below is context only.",
     )

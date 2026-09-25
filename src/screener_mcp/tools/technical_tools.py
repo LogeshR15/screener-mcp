@@ -21,9 +21,9 @@ from ..core.company_page import fetch_company_page
 from ..core.envelope import ToolError, ToolResult
 from ..core.indices import INDICES, resolve_index, sector_index_for
 from ..core.numbers import to_number
-from ..core.quality import overview_field, overview_missing_fields
-from ..core.technicals import compute_technicals, fetch_price_history
-from ..parsers.company import parse_balance_sheet, parse_overview
+from ..core.quality import is_financial, overview_field, overview_missing_fields
+from ..core.technicals import HISTORY_DAYS, compute_technicals, fetch_price_history
+from ..parsers.company import debt_to_equity, parse_overview
 from ..parsers.screener import parse_screen_results
 
 DEFAULT_UNIVERSE = "nifty500"
@@ -367,27 +367,12 @@ async def run_technical_screen(
 
 # ─── 52-week-low candidates ────────────────────────────────────────────────────
 
-def _debt_to_equity(html: str) -> Optional[float]:
-    """Borrowings ÷ (Equity Capital + Reserves) from the latest balance sheet."""
-    bs = parse_balance_sheet(html)
-    latest: dict[str, Optional[float]] = {}
-    for row in bs.get("rows", []):
-        label = re.sub(r"[\s+]+$", "", row.get("label", "")).lower()
-        vals = row.get("values", [])
-        if label in ("equity capital", "reserves", "borrowings") and vals:
-            latest[label] = to_number(vals[-1])
-    equity = (latest.get("equity capital") or 0) + (latest.get("reserves") or 0)
-    borrowings = latest.get("borrowings")
-    if borrowings is None or equity <= 0:
-        return None
-    return round(borrowings / equity, 2)
-
-
 async def _enrich(match: dict) -> dict:
     """Add the same clean overview fields get_company_overview returns."""
     page = await fetch_company_page(match["symbol"], "consolidated")
     ov = parse_overview(page.html)
     missing = overview_missing_fields(ov)
+    financial = is_financial(ov.get("sectors", []))
     match["overview"] = {
         "name": ov.get("name"),
         "financial_type": page.financial_type,
@@ -401,8 +386,12 @@ async def _enrich(match: dict) -> dict:
         "roe": to_number(overview_field(ov, "roe")),
         "book_value": to_number(overview_field(ov, "book_value")),
         "dividend_yield": to_number(overview_field(ov, "dividend_yield")),
-        "debt_to_equity": _debt_to_equity(page.html),
-        "debt_to_equity_basis": "Borrowings ÷ (Equity Capital + Reserves), latest balance sheet",
+        "debt_to_equity": None if financial else debt_to_equity(page.html),
+        "debt_to_equity_basis": (
+            "not meaningful for banks/NBFCs/insurers — leverage is the business model"
+            if financial else "Borrowings ÷ (Equity Capital + Reserves), latest balance sheet"
+        ),
+        "is_financial": financial,
     }
     if missing:
         match["overview"]["missing_fields"] = missing
@@ -451,12 +440,14 @@ async def get_52_week_low_candidates(
 
     matches = result.data["results"]
     enriched = await asyncio.gather(*[_enrich(m) for m in matches], return_exceptions=True)
-    final, dropped_de, unknown_de = [], [], []
+    final, dropped_de, unknown_de, financials = [], [], [], []
     for m in enriched:
         if isinstance(m, Exception):
             continue
         de = m["overview"]["debt_to_equity"]
-        if not de_prefiltered:
+        if m["overview"]["is_financial"]:
+            financials.append(m["symbol"])
+        elif not de_prefiltered:
             if de is None:
                 unknown_de.append(m["symbol"])
             elif de > max_debt_to_equity:
@@ -465,6 +456,11 @@ async def get_52_week_low_candidates(
         m["pct_above_52w_low"] = m["technicals"]["pct_above_52w_low"]
         final.append(m)
 
+    if financials:
+        warnings.append(
+            f"{', '.join(financials)}: financial companies — debt-to-equity filter not applied (leverage is "
+            "their business). Judge them on ROE, asset quality (GNPA) and capital adequacy instead."
+        )
     if unknown_de:
         warnings.append(
             f"Debt-to-equity couldn't be computed for {', '.join(unknown_de)} (e.g. banks/NBFCs, or no "
@@ -565,7 +561,7 @@ async def compare_to_sector(symbol: str, days: int = 30, benchmark: str = "") ->
 
     if not page.company_id:
         raise ToolError(f"Couldn't find {page.symbol}'s chart id on Screener.in.", "upstream_error")
-    fetch_days = max(days + 30, 120)
+    fetch_days = HISTORY_DAYS
     series = await asyncio.gather(
         fetch_price_history(page.company_id, fetch_days),
         fetch_price_history(sector[2], fetch_days),

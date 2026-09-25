@@ -155,37 +155,24 @@ async def get_document_list(symbol: str) -> ToolResult:
     all_reports = screener_reports or nse_reports
     all_calls = screener_calls
 
-    lines = [f"# Documents Available — {symbol.upper()}", ""]
-
-    if all_reports:
-        lines.append(f"## Annual Reports ({len(all_reports)} found)")
-        for r in sorted(all_reports, key=lambda x: x.get("year", ""), reverse=True):
-            lines.append(f"  [{r['year']}] {r['title']}")
-            lines.append(f"          URL: {r['url']}")
-    else:
-        lines.append("## Annual Reports")
-        lines.append("  None found via Screener.in or NSE API.")
-        lines.append("  Tip: Check the company's investor relations page directly.")
-
-    lines.append("")
-
-    if all_calls:
-        lines.append(f"## Earnings Call Transcripts ({len(all_calls)} found)")
-        for c in all_calls:
-            lines.append(f"  [{c['quarter']}] {c['title']}")
-            lines.append(f"          URL: {c['url']}")
-    else:
-        lines.append("## Earnings Call Transcripts")
-        lines.append("  None found on Screener.in.")
-
-    lines.append("")
-    lines.append("Use `analyze_annual_report(symbol, year, question)` or")
-    lines.append("`analyze_earnings_call(symbol, quarter, question)` to ask questions about these documents.")
-    lines.append("You can also pass `pdf_url` directly if you have the link.")
-
+    warnings = page.warnings + nse_warning
+    if not all_reports:
+        warnings.append("No annual reports found via Screener.in or NSE — check the company's investor relations page.")
+    if not all_calls:
+        warnings.append("No earnings call transcripts listed on Screener.in.")
     return ToolResult(
-        data={"report": "\n".join(lines)},
-        warnings=page.warnings + nse_warning,
+        data={
+            "symbol": symbol,
+            "annual_reports": [
+                {"year": r.get("year"), "title": r.get("title"), "url": r.get("url"), "source": r.get("source") or r.get("exchange")}
+                for r in sorted(all_reports, key=lambda x: str(x.get("year", "")), reverse=True)
+            ],
+            "earnings_calls": [
+                {"quarter": c.get("quarter"), "title": c.get("title"), "url": c.get("url")} for c in all_calls
+            ],
+            "next_step": "analyze_annual_report(symbol, year, question) or analyze_earnings_call(symbol, quarter, question); pdf_url can be passed directly.",
+        },
+        warnings=warnings,
         partial=bool(nse_warning),
         reason=nse_warning[0] if nse_warning else None,
         meta=page.meta,

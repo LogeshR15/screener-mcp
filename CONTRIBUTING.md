@@ -63,7 +63,9 @@ screener-mcp/
 ├── run_server.py                      # Entry point (calls server.main())
 ├── tests/
 │   ├── test_tools.py                  # Offline registry + docs-consistency tests
-│   └── test_data_quality.py           # Envelope, symbol resolution, ratio flags, technicals
+│   ├── test_data_quality.py           # Envelope, resolution, ratio flags, technicals, cache, NSE
+│   └── fixtures/                      # Trimmed real Screener pages
+├── scripts/canary.py                  # Live checks against Screener.in (runs daily in CI)
 └── src/screener_mcp/
     ├── server.py                      # FastMCP — all 33 tool definitions (start here)
     ├── client.py                      # Screener.in HTTP client + auth
@@ -147,6 +149,7 @@ async def get_concall_schedule(symbol: str) -> dict:
 - **Return a `ToolResult`** (or a dict, or a markdown string for report-style tools). Never return blanks that look like real values. Use `None`, list the field in `missing_fields`, and give a `reason`
 - **Raise `ToolError`** for expected failures (bad input, not found). Put anything the caller can act on in its keyword details, such as `candidates=[...]`
 - **Fetch company pages through `fetch_company_page`** so symbol resolution and the consolidated → standalone fallback apply everywhere
+- **If your tool parses a new part of a Screener page, add a check to `scripts/canary.py`** so a future layout change fails loudly instead of returning blanks
 - **Write a clear docstring** — Claude uses it to decide when and how to call your tool; include an example
 - **No login for pure data tools** — if your tool needs auth, add the `_LOGIN_REQUIRED_MSG` pattern (see `screening_tools.py` for reference)
 - **Keep it focused** — one tool, one job; don't add optional complexity upfront

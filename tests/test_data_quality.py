@@ -503,3 +503,175 @@ async def test_compare_stocks_ui_keeps_top_level_stocks_for_dashboard(fake_pages
     env = await server.compare_stocks_ui(["MSUMI"])
     assert env["status"] == "ok" and env["count"] == 1
     assert env["stocks"] == env["data"]["stocks"]
+
+
+# ─── price-history cache ──────────────────────────────────────────────────────
+
+from datetime import datetime as _dt, timedelta as _td, timezone as _tz  # noqa: E402
+
+from screener_mcp.core import technicals as tech_mod  # noqa: E402
+
+_IST = _tz(_td(hours=5, minutes=30))
+
+
+def _ts(y, mo, d, h, mi):
+    return _dt(y, mo, d, h, mi, tzinfo=_IST).timestamp()
+
+
+@pytest.mark.parametrize("fetched,now,fresh", [
+    (_ts(2026, 9, 24, 18, 0), _ts(2026, 9, 25, 8, 0), True),     # after close → valid until next open
+    (_ts(2026, 9, 24, 18, 0), _ts(2026, 9, 25, 9, 20), False),   # next session opened
+    (_ts(2026, 9, 25, 10, 0), _ts(2026, 9, 25, 10, 10), True),   # intraday, within 15 min
+    (_ts(2026, 9, 25, 10, 0), _ts(2026, 9, 25, 10, 20), False),  # intraday, stale
+    (_ts(2026, 9, 25, 15, 0), _ts(2026, 9, 25, 17, 0), False),   # fetched intraday, now closed
+    (_ts(2026, 9, 25, 17, 0), _ts(2026, 9, 27, 12, 0), True),    # Friday close → valid all weekend
+])
+def test_price_cache_freshness(fetched, now, fresh):
+    assert tech_mod.cache_is_fresh(fetched, now) is fresh
+
+
+async def test_price_cache_serves_repeat_and_shorter_requests(tmp_path, monkeypatch):
+    monkeypatch.setattr(tech_mod, "_CACHE_DIR", tmp_path)
+    monkeypatch.setattr(tech_mod, "cache_is_fresh", lambda *a: True)
+    tech_mod.clear_price_cache()
+    calls = []
+    payload = {"datasets": [{"metric": "Price", "values": [[f"2025-{m:02d}-01", str(100 + m)] for m in range(1, 13)]}]}
+
+    class FakeClient:
+        async def get_json(self, path, params=None):
+            calls.append(params["days"])
+            return payload
+
+    async def fake_client():
+        return FakeClient()
+
+    monkeypatch.setattr(tech_mod, "get_client", fake_client)
+    h1 = await tech_mod.fetch_price_history("42", 400)
+    h2 = await tech_mod.fetch_price_history("42", 400)
+    tech_mod.clear_price_cache()                           # memory gone → disk hit
+    h3 = await tech_mod.fetch_price_history("42", 120)     # shorter window → trimmed from cache
+    assert calls == ["400"]
+    assert len(h1.closes) == len(h2.closes) == 12
+    assert h3.dates[0] > "2025-08-01" and h3.closes[-1] == 112
+
+
+# ─── sector awareness ─────────────────────────────────────────────────────────
+
+from screener_mcp.core.quality import is_financial  # noqa: E402
+
+
+def test_financials_skip_days_checks():
+    assert is_financial(["Financial Services", "Private Sector Bank"])
+    assert not is_financial(["Automobile and Auto Components"])
+    rows = ratio_rows(["30", "30", "40"], ["40", "37", "30"], ["60", "345", "65"], ["10", "-278", "5"])
+    assert check_ratio_history(YEARS, rows, financial=True) == {}
+
+
+# ─── commodities ──────────────────────────────────────────────────────────────
+
+from screener_mcp.tools import commodities as com_mod  # noqa: E402
+
+
+async def test_commodity_benchmark_with_inr_conversion(monkeypatch):
+    async def fake_chart(symbol, years):
+        if symbol == "INR=X":
+            return {"meta": {"regularMarketPrice": 90.0}, "closes": [90.0], "timestamps": []}
+        return {"meta": {"regularMarketPrice": 3110.35, "regularMarketTime": 1790000000},
+                "closes": [1555.175] * 60 + [3110.35], "timestamps": []}
+
+    monkeypatch.setattr(com_mod, "_yahoo_chart", fake_chart)
+    env = await server.get_commodity_prices("gold", years=2)
+    b = env["data"]["benchmark"]
+    assert env["status"] == "ok" and b["source_symbol"] == "GC=F"
+    assert b["change_period_pct"] == 100.0
+    assert b["approx_inr"] == pytest.approx(3110.35 * 10 / 31.1035 * 90, rel=1e-6)  # ₹/10g
+
+
+async def test_commodity_without_feed_is_partial():
+    env = await server.get_commodity_prices("nickel")
+    assert env["status"] == "partial" and env["missing_fields"] == ["benchmark_price"]
+
+
+# ─── structured outputs / dashboard ───────────────────────────────────────────
+
+from screener_mcp.parsers.company import debt_to_equity  # noqa: E402
+
+
+def test_debt_to_equity_from_balance_sheet():
+    html = """<section id="balance-sheet"><table><thead><tr><th></th><th>Mar 2025</th><th>Mar 2026</th></tr></thead>
+      <tbody><tr><td>Equity Capital</td><td>10</td><td>10</td></tr><tr><td>Reserves</td><td>80</td><td>90</td></tr>
+      <tr><td>Borrowings +</td><td>50</td><td>25</td></tr></tbody></table></section>"""
+    assert debt_to_equity(html) == 0.25
+    assert debt_to_equity("<html></html>") is None
+
+
+async def test_dashboard_widget_is_an_mcp_app_resource():
+    tools = {t.name: t for t in await server.mcp.list_tools()}
+    uri = tools["compare_stocks_ui"].meta["ui"]["resourceUri"]
+    resources = {str(r.uri): r for r in await server.mcp.list_resources()}
+    assert resources[uri].mimeType == "text/html;profile=mcp-app"
+    html = list(await server.mcp.read_resource(uri))[0].content
+    assert "/*__EXT_APPS_BUNDLE__*/" not in html and "globalThis.ExtApps={" in html
+
+
+async def test_quarterly_results_are_structured(fake_pages):
+    page = FULL_PAGE.replace("</body>", """<section id="quarters"><table>
+      <thead><tr><th></th><th>Mar 2026</th><th>Jun 2026</th></tr></thead>
+      <tbody><tr><td>Sales +</td><td>3,335</td><td>3,407</td></tr><tr><td>OPM %</td><td>11%</td><td>12%</td></tr></tbody>
+      </table></section></body>""")
+    fake_pages[("MSUMI", "consolidated")] = page
+    env = await server.get_quarterly_results("MSUMI")
+    assert env["data"]["quarters"] == ["Mar 2026", "Jun 2026"]
+    assert env["data"]["rows"][0]["values"] == [3335.0, 3407.0]
+    assert env["data"]["rows"][1]["values"] == [11.0, 12.0]
+
+
+async def test_portfolio_pnl_ignores_holdings_without_price(tmp_path, monkeypatch):
+    from screener_mcp.tools import portfolio as pf
+
+    monkeypatch.setattr(pf, "_PORTFOLIO_PATH", tmp_path / "p.json")
+    pf._save({"holdings": {"AAA": {"quantity": 10, "avg_price": 100}, "BBB": {"quantity": 5, "avg_price": 1000}}})
+
+    async def fake_price(sym):
+        return 110.0 if sym == "AAA" else None
+
+    monkeypatch.setattr(pf, "_live_price", fake_price)
+    env = await server.get_portfolio()
+    t = env["data"]["totals"]
+    assert env["status"] == "partial" and env["missing_fields"] == ["BBB.price"]
+    assert t["pnl"] == 100.0 and t["pnl_pct"] == 10.0   # not -4900 from counting BBB as worthless
+
+
+# ─── client pacing: one 429 must pause every request ──────────────────────────
+
+import asyncio as _asyncio  # noqa: E402
+
+import httpx as _httpx  # noqa: E402
+
+from screener_mcp import client as client_mod  # noqa: E402
+
+
+async def test_a_429_cools_down_all_concurrent_requests(monkeypatch):
+    monkeypatch.setattr(client_mod, "_MIN_INTERVAL", 0.0)
+    monkeypatch.setattr(client_mod.random, "uniform", lambda a, b: 0.0)
+    loop = _asyncio.get_running_loop()
+    hits = []
+    state = {"limited": False}
+
+    def handler(request):
+        hits.append((request.url.path, loop.time()))
+        if request.url.path == "/a" and not state["limited"]:
+            state["limited"] = True
+            return _httpx.Response(429, headers={"Retry-After": "1"})
+        return _httpx.Response(200, text="ok")
+
+    c = client_mod.ScreenerClient()
+    c._client = _httpx.AsyncClient(transport=_httpx.MockTransport(handler))
+    t0 = loop.time()
+    first = _asyncio.create_task(c._get("https://x/a"))
+    await _asyncio.sleep(0.05)              # let /a hit the 429 first
+    second = await c._get("https://x/b")    # a different request, issued during the cooldown
+    assert (await first).status_code == 200 and second.status_code == 200
+    b_time = next(t for p, t in hits if p == "/b")
+    assert b_time - t0 >= 0.9               # /b waited out the shared cooldown
+    await c._client.aclose()

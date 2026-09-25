@@ -5,7 +5,7 @@ to produce analyst-grade structured output for Claude to reason over.
 
 from ..core.company_page import fetch_company_page
 from ..core.envelope import ToolResult
-from ..core.quality import check_ratio_history, explain_missing, overview_missing_fields, OVERVIEW_CORE_FIELDS
+from ..core.quality import check_ratio_history, explain_missing, is_financial, overview_missing_fields, OVERVIEW_CORE_FIELDS
 from ..parsers.company import parse_full_page
 
 
@@ -69,7 +69,8 @@ async def get_full_analysis(
     rh = data.get("ratios_history", {})
     sections.append("")
     sections.append(_fmt_table("Key Ratios History", rh, n_years=10))
-    ratio_flags = check_ratio_history(rh.get("years", []), rh.get("rows", []))
+    ratio_flags = check_ratio_history(rh.get("years", []), rh.get("rows", []),
+                                      financial=is_financial(ov.get("sectors", [])))
     if ratio_flags:
         sections.append("")
         sections.append("⚠ DATA QUALITY — these ratio values are implausible or internally inconsistent; treat as suspect:")

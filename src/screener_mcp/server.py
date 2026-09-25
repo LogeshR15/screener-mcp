@@ -39,7 +39,7 @@ Tools exposed to Claude (33 total):
 Resources:
   screener://analyst-guide    — how to use this assistant
   screener://query-syntax     — Screener query language reference
-  screener://stock-comparison — interactive stock comparison dashboard UI
+  ui://screener/stock-comparison.html — interactive dashboard (MCP App) for compare_stocks_ui
 
 Setup:
   Set environment variables:
@@ -152,6 +152,11 @@ def _safe(result):
             )
     functools.update_wrapper(wrapper, result)
     return wrapper
+
+
+_UI_DIR = Path(__file__).parent / "ui"
+STOCK_COMPARISON_WIDGET_URI = "ui://screener/stock-comparison.html"
+MCP_APP_MIME_TYPE = "text/html;profile=mcp-app"
 
 
 mcp = FastMCP(
@@ -539,7 +544,7 @@ def _num(text: str) -> float | None:
         return None
 
 
-def _compute_red_flags(ratios: dict[str, str]) -> list[dict[str, str]]:
+def _compute_red_flags(ratios: dict[str, str], financial: bool = False) -> list[dict[str, str]]:
     """Deterministic, rule-based red flag checks computed from a single snapshot of ratios.
 
     Not a substitute for the LLM-driven analyze_red_flags tool (which reasons over
@@ -548,14 +553,14 @@ def _compute_red_flags(ratios: dict[str, str]) -> list[dict[str, str]]:
     """
     flags: list[dict[str, str]] = []
 
-    debt_equity = _num(_find_ratio(ratios, "Debt to equity"))
+    debt_equity = None if financial else _num(_find_ratio(ratios, "Debt to equity"))
     if debt_equity is not None:
         if debt_equity > 1.5:
             flags.append({"flag": f"High debt-to-equity ratio ({debt_equity:.2f})", "severity": "critical"})
         elif debt_equity > 0.8:
             flags.append({"flag": f"Elevated debt-to-equity ratio ({debt_equity:.2f})", "severity": "warning"})
 
-    roce = _num(_find_ratio(ratios, "Return on capital employed", "ROCE"))
+    roce = None if financial else _num(_find_ratio(ratios, "Return on capital employed", "ROCE"))
     if roce is not None and roce < 10:
         flags.append({"flag": f"Low return on capital employed ({roce:.1f}%)", "severity": "warning"})
 
@@ -570,14 +575,20 @@ def _compute_red_flags(ratios: dict[str, str]) -> list[dict[str, str]]:
     return flags
 
 
-@mcp.tool(annotations={"title": "Compare Stocks (Interactive UI)", "readOnlyHint": True, "openWorldHint": True})
+@mcp.tool(
+    annotations={"title": "Compare Stocks (Interactive UI)", "readOnlyHint": True, "openWorldHint": True},
+    # "ui/resourceUri" is the older flat key some hosts still read
+    meta={"ui": {"resourceUri": STOCK_COMPARISON_WIDGET_URI}, "ui/resourceUri": STOCK_COMPARISON_WIDGET_URI},
+)
 async def compare_stocks_ui(symbols: list[str] | str) -> dict:
     """
     Interactive stock comparison dashboard.
 
     Compare multiple stocks side-by-side with real-time price, market cap,
-    P/E, ROE, ROCE, debt levels, and rule-based red flag checks.
-    Renders as an interactive dashboard in Claude Desktop.
+    P/E, ROE, ROCE, debt-to-equity, dividend yield and rule-based red flag
+    checks. Opens an interactive dashboard (MCP App) in hosts that support
+    it — best value in each row highlighted, one-click retry for ambiguous
+    symbols; other hosts get the same data as JSON.
 
     Args:
         symbols: Stock symbols, either as a list (["TCS", "INFY", "WIPRO"])
@@ -588,7 +599,7 @@ async def compare_stocks_ui(symbols: list[str] | str) -> dict:
       compare_stocks_ui(["HDFCBANK", "ICICIBANK", "AXISBANK"])
       compare_stocks_ui("HINDUNILVR,ITC,NESTLEIND")
 
-    Note: use NSE trading symbols, not company names (e.g. "INFY" not "INFOSYS").
+    Company names and near-miss symbols are resolved like everywhere else.
     """
     env = await _safe(_compare_stocks_ui_impl)(symbols)
     # The dashboard UI predates the envelope and reads `stocks` / `count` at
@@ -600,8 +611,8 @@ async def compare_stocks_ui(symbols: list[str] | str) -> dict:
 async def _compare_stocks_ui_impl(symbols: list[str] | str) -> ToolResult:
     import asyncio
     from .core.company_page import fetch_company_page
-    from .core.quality import overview_missing_fields
-    from .parsers.company import parse_overview
+    from .core.quality import is_financial, overview_missing_fields
+    from .parsers.company import debt_to_equity, parse_overview
 
     if isinstance(symbols, str):
         symbols = symbols.split(",")
@@ -630,6 +641,7 @@ async def _compare_stocks_ui_impl(symbols: list[str] | str) -> ToolResult:
         missing = overview_missing_fields(overview)
         missing_all += [f"{page.symbol}.{m}" for m in missing]
         ratios = overview.get("key_ratios", {})
+        financial = is_financial(overview.get("sectors", []))
         stocks.append({
             "symbol": page.symbol,
             "name": overview.get("name"),
@@ -639,11 +651,12 @@ async def _compare_stocks_ui_impl(symbols: list[str] | str) -> ToolResult:
             "pe_ratio": _find_ratio(ratios, "Stock P/E", "P/E") or None,
             "roe": _find_ratio(ratios, "Return on equity", "ROE") or None,
             "roce": _find_ratio(ratios, "Return on capital employed", "ROCE") or None,
-            "debt_to_equity": _find_ratio(ratios, "Debt to equity") or None,
+            "debt_to_equity": None if financial else debt_to_equity(page.html),
             "dividend_yield": _find_ratio(ratios, "Dividend Yield") or None,
             "book_value": _find_ratio(ratios, "Book Value") or None,
             "missing_fields": missing,
-            "red_flags": _compute_red_flags(ratios),
+            "red_flags": _compute_red_flags(
+                {**ratios, "Debt to equity": str(debt_to_equity(page.html) or "")}, financial=financial),
         })
 
     failed = [s for s in stocks if "error" in s]
@@ -926,12 +939,16 @@ async def get_commodity_prices(commodity: str, years: int = 5) -> dict:
     """
     Get commodity price context and its impact on Indian listed companies.
 
-    Covers which companies benefit or suffer from price moves, and suggested
-    Screener queries to find companies exposed to this commodity.
+    Returns the international benchmark price the MCX contract tracks
+    (COMEX gold/silver/copper, Brent, Henry Hub, etc.), with 4-week, 52-week
+    and `years`-period moves and range, USD/INR, and an approximate INR price
+    (a pure FX conversion — excludes import duty/GST, so below MCX). Also covers
+    which companies benefit or suffer from price moves, and Screener queries to
+    find exposed companies.
 
     commodity: gold | silver | crude_oil | copper | aluminium | zinc | nickel
-               | cotton | natural_gas | steel
-    years: historical context period (1–10, default 5)
+               | cotton | natural_gas | steel   (nickel: no free feed → partial)
+    years: history period for the moves and range (1–10, default 5)
 
     Examples:
       get_commodity_prices("crude_oil")
@@ -1160,27 +1177,36 @@ Profit growth 5Years > 20 AND Sales growth 5Years > 20 AND Return on capital emp
 
 # ─── MCP App UI Resource ──────────────────────────────────────────────────────
 
-# Load the stock comparison dashboard UI bundle
-_ui_bundle_path = Path(__file__).parent.parent.parent / "apps" / "stock-comparison-dashboard" / "dist" / "index.html"
-_ui_bundle = ""
-if _ui_bundle_path.exists():
-    _ui_bundle = _ui_bundle_path.read_text()
-else:
-    _ui_bundle = """
-    <html>
-        <head><title>Stock Comparison Dashboard</title></head>
-        <body style="padding: 20px; font-family: system-ui; color: #666;">
-            <p>⚠️ <strong>Stock comparison UI not found.</strong></p>
-            <p>Build it with: <code>cd apps/stock-comparison-dashboard && npm run build</code></p>
-        </body>
-    </html>
-    """
+# The widget runs in the host's sandboxed iframe, whose CSP blocks CDN script
+# loads, so the MCP Apps runtime (vendored in ui/) is inlined into the HTML.
+# Its trailing ES `export {...}` is rewritten to a `globalThis.ExtApps` global
+# because the inlined code runs as a classic block inside the module script.
+def _inline_ext_apps(html: str) -> str:
+    bundle = (_UI_DIR / "ext-apps-app-with-deps.js").read_text()
+
+    def to_global(m: re.Match) -> str:
+        pairs = []
+        for part in m.group(1).split(","):
+            local, _, exported = (x.strip() for x in part.partition(" as "))
+            pairs.append(f"{exported or local}:{local}")
+        return "globalThis.ExtApps={" + ",".join(pairs) + "};"
+
+    bundle = re.sub(r"export\{([^}]+)\};?\s*$", to_global, bundle)
+    return html.replace("/*__EXT_APPS_BUNDLE__*/", bundle)
 
 
-@mcp.resource("screener://stock-comparison")
+_stock_comparison_html = _inline_ext_apps((_UI_DIR / "stock_comparison.html").read_text())
+
+
+@mcp.resource(
+    STOCK_COMPARISON_WIDGET_URI,
+    name="Stock Comparison Dashboard",
+    description="Interactive dashboard rendered for compare_stocks_ui results.",
+    mime_type=MCP_APP_MIME_TYPE,
+)
 def stock_comparison_ui() -> str:
     """Stock Comparison Dashboard — interactive UI for comparing multiple stocks."""
-    return _ui_bundle
+    return _stock_comparison_html
 
 
 @mcp.custom_route("/health", methods=["GET"])

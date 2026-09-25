@@ -12,14 +12,103 @@ Note: the 52-week high/low here is on a *closing-price* basis. The overview's
 "High / Low" on Screener.in may use intraday extremes, so they can differ a bit.
 """
 
+import json
+import logging
+import os
+import time
 from dataclasses import dataclass, field
-from datetime import date, datetime
+from datetime import date, datetime, timedelta, timezone
+from pathlib import Path
 from typing import Optional
 
 from ..client import get_client
 
+logger = logging.getLogger(__name__)
+
 CHART_METRICS = "Price-DMA50-DMA200-Volume"
+# One shared window (a little over a year) so every caller hits the same cache entry.
+HISTORY_DAYS = 400
 _STALE_AFTER_DAYS = 7
+
+# ─── price-history cache ──────────────────────────────────────────────────────
+# Daily bars only change once per session, yet every technical screen used to
+# re-download a year of history per stock — the main reason screens took
+# 15-60s under Screener's rate limiting. Cache the raw chart payload on disk:
+#   * during NSE market hours (Mon-Fri 09:15-15:45 IST) for 15 minutes, since
+#     the latest bar is still moving;
+#   * outside market hours until the next session opens.
+# Set SCREENER_PRICE_CACHE=0 to disable.
+_IST = timezone(timedelta(hours=5, minutes=30))
+_INTRADAY_TTL = 15 * 60
+_CACHE_DIR = Path(os.getenv("SCREENER_PRICE_CACHE_DIR", str(Path.home() / ".screener-mcp" / "price_cache")))
+_memory_cache: dict[str, tuple[float, int, dict]] = {}
+
+
+def _cache_enabled() -> bool:
+    return os.getenv("SCREENER_PRICE_CACHE", "1") not in ("0", "false", "no")
+
+
+def _market_open(ist: datetime) -> bool:
+    if ist.weekday() >= 5:
+        return False
+    minutes = ist.hour * 60 + ist.minute
+    return 9 * 60 + 15 <= minutes <= 15 * 60 + 45
+
+
+def _next_open(ist: datetime) -> datetime:
+    candidate = ist.replace(hour=9, minute=15, second=0, microsecond=0)
+    if ist >= candidate:
+        candidate += timedelta(days=1)
+    while candidate.weekday() >= 5:
+        candidate += timedelta(days=1)
+    return candidate
+
+
+def cache_is_fresh(fetched_at: float, now: Optional[float] = None) -> bool:
+    """Is a payload fetched at ``fetched_at`` (epoch secs) still current?"""
+    now = now if now is not None else time.time()
+    fetched = datetime.fromtimestamp(fetched_at, _IST)
+    current = datetime.fromtimestamp(now, _IST)
+    if _market_open(current):
+        # moving bar: short TTL, and never trust a pre-open fetch
+        return now - fetched_at < _INTRADAY_TTL and _market_open(fetched)
+    if _market_open(fetched):
+        # fetched intraday, market now closed → the closing bar has changed
+        return False
+    return current < _next_open(fetched)
+
+
+def _cache_path(company_id: str) -> Path:
+    return _CACHE_DIR / f"{company_id}.json"
+
+
+def _cache_get(company_id: str, days: int) -> Optional[dict]:
+    hit = _memory_cache.get(company_id)
+    if hit is None:
+        try:
+            raw = json.loads(_cache_path(company_id).read_text())
+            hit = (raw["fetched_at"], raw["days"], raw["payload"])
+            _memory_cache[company_id] = hit
+        except (OSError, ValueError, KeyError):
+            return None
+    fetched_at, cached_days, payload = hit
+    if cached_days >= days and cache_is_fresh(fetched_at):
+        return payload
+    return None
+
+
+def _cache_put(company_id: str, days: int, payload: dict):
+    now = time.time()
+    _memory_cache[company_id] = (now, days, payload)
+    try:
+        _CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        _cache_path(company_id).write_text(json.dumps({"fetched_at": now, "days": days, "payload": payload}))
+    except OSError as e:
+        logger.debug("price cache write failed for %s: %s", company_id, e)
+
+
+def clear_price_cache():
+    _memory_cache.clear()
 
 
 @dataclass
@@ -61,13 +150,41 @@ def parse_chart(payload: dict) -> PriceHistory:
     return hist
 
 
-async def fetch_price_history(company_id: str, days: int = 365) -> PriceHistory:
-    client = await get_client()
-    payload = await client.get_json(
-        f"/api/company/{company_id}/chart/",
-        params={"q": CHART_METRICS, "days": str(days)},
+async def fetch_price_history(company_id: str, days: int = HISTORY_DAYS) -> PriceHistory:
+    """Daily history for a company/index id, served from cache when current.
+
+    A cached payload covering more days than requested is trimmed to the
+    requested window, so a 365-day fetch also serves later 120-day requests.
+    """
+    days = int(days)
+    payload = _cache_get(company_id, days) if _cache_enabled() else None
+    if payload is None:
+        client = await get_client()
+        payload = await client.get_json(
+            f"/api/company/{company_id}/chart/",
+            params={"q": CHART_METRICS, "days": str(days)},
+        )
+        payload = payload if isinstance(payload, dict) else {}
+        if _cache_enabled() and payload.get("datasets"):
+            _cache_put(company_id, days, payload)
+    hist = parse_chart(payload)
+    return _trim(hist, days)
+
+
+def _trim(hist: PriceHistory, days: int) -> PriceHistory:
+    if not hist.dates:
+        return hist
+    cutoff = (datetime.strptime(hist.dates[-1], "%Y-%m-%d") - timedelta(days=days)).strftime("%Y-%m-%d")
+    keep = [i for i, d in enumerate(hist.dates) if d > cutoff]
+    if len(keep) == len(hist.dates):
+        return hist
+    return PriceHistory(
+        dates=[hist.dates[i] for i in keep],
+        closes=[hist.closes[i] for i in keep],
+        volumes=[hist.volumes[i] for i in keep],
+        dma50=hist.dma50,
+        dma200=hist.dma200,
     )
-    return parse_chart(payload if isinstance(payload, dict) else {})
 
 
 # ─── indicators ────────────────────────────────────────────────────────────────
