@@ -18,6 +18,8 @@ An MCP (Model Context Protocol) server that gives Claude live access to [Screene
 ```
 "Compare ITC and HINDUNILVR on all key ratios"
 "Find low-debt, high-ROCE chemical stocks"
+"Quality stocks within 10% of their 52-week low"
+"Has MSUMI fallen more than the auto sector over the last 60 days?"
 "Summarize the key risks from Reliance's 2024 annual report"
 "What did TCS management say about margins in Q3FY25?"
 "What are the red flags in Asian Paints?"
@@ -71,13 +73,14 @@ If these return real data, the server is working end to end.
 ## What it provides
 
 - **Company research** — financials, ratios, shareholding, peer comparison, red-flag detection (no login required)
-- **Stock screening** — custom Screener.in-style queries and pre-built thematic screens (requires a free Screener.in login)
+- **Stock screening** — custom Screener.in-style queries, pre-built thematic screens, and technical clauses (52-week distance, RSI, DMA, volume spikes). Fundamental screens need a free Screener.in login; technical-only screens don't
+- **Price-action context** — quality stocks near 52-week lows in one call, and a stock's move vs its sector index and the Nifty 50
 - **Document analysis** — ask questions over annual reports and earnings call transcripts using a local RAG pipeline
 - **Corporate events** — NSE announcements, bulk deals, insider trading disclosures, promoter pledge trends, credit ratings
 - **Market & research** — commodity price context, local research notes
 - **Portfolio** — a private, local holdings tracker with live P&L
 
-31 tools in total — full reference [below](#tools--31-total).
+33 tools in total — full reference [below](#tools--33-total). Every tool returns the same [response envelope](#response-envelope), so partial or degraded data is always explicit.
 
 ---
 
@@ -85,6 +88,8 @@ If these return real data, the server is working end to end.
 
 - **Compare companies** — `"Compare ITC and HINDUNILVR on all key ratios"` → `compare_companies`
 - **Screen for opportunities** — `"Find low-debt, high-ROCE small caps"` → `screen_by_theme` or `screen_stocks`
+- **Find pullbacks** — `"High-ROCE, low-debt stocks near their 52-week low"` → `get_52_week_low_candidates`, or `screen_stocks("Return on capital employed > 15 AND 52 week low distance < 10")`
+- **Market vs company-specific** — `"Is this fall sector-wide or just this stock?"` → `compare_to_sector`
 - **Read an annual report** — `"What are the key risks in Reliance's 2024 annual report?"` → `analyze_annual_report`
 - **Read an earnings call** — `"What did TCS say about margins in Q3FY25?"` → `analyze_earnings_call`
 - **Spot red flags** — `"What are the red flags in Asian Paints?"` → `analyze_red_flags`
@@ -171,7 +176,7 @@ Claude Desktop does **not** inherit your shell environment, so credentials must 
 
 **4.** Quit Claude Desktop completely (**Cmd+Q** on macOS) and reopen it.
 
-**5.** Check the tools icon in the message composer — `screener` should list its 31 tools. Then ask: `"Search for Asian Paints"`.
+**5.** Check the tools icon in the message composer — `screener` should list its 33 tools. Then ask: `"Search for Asian Paints"`.
 
 > Server not showing up? Check **Settings → Developer** for its status, and the logs at `~/Library/Application Support/Claude/logs/mcp-server-screener.log` (macOS) or `%APPDATA%\Claude\logs\` (Windows). Invalid JSON — often a stray trailing comma — makes Claude Desktop skip every server silently.
 
@@ -228,7 +233,8 @@ For remote/network deployment rather than a local stdio process, see [Remote HTT
 | Capability | Needs Screener.in login? |
 |---|:---:|
 | Company research (financials, ratios, shareholding, peers, red flags) | No |
-| Stock screening (`screen_stocks`, `screen_by_theme`) | Yes |
+| Stock screening with fundamental clauses (`screen_stocks`, `screen_by_theme`) | Yes |
+| Technical-only screens, `get_52_week_low_candidates`, `compare_to_sector` | No (a login lets `get_52_week_low_candidates` scan the whole market instead of an index) |
 | NSE announcements, bulk deals, credit ratings, commodities | No |
 | Document analysis, notebook, portfolio | No |
 
@@ -256,7 +262,7 @@ Never commit real credentials — the values above are placeholders.
 
 ---
 
-## Tools — 31 total
+## Tools — 33 total
 
 Grouped by category. See [Example workflows](#example-workflows) for the ones you'll reach for most.
 
@@ -280,7 +286,9 @@ Grouped by category. See [Example workflows](#example-workflows) for the ones yo
 
 | Tool | What it does | Login needed |
 |------|-------------|:---:|
-| `screen_stocks` | Custom Screener.in query | Yes |
+| `screen_stocks` | Screener.in query plus technical clauses (52W distance, RSI, DMA, volume spike) | Fundamental clauses only |
+| `get_52_week_low_candidates` | Quality filters + proximity to 52-week low, with overview fields per match | No |
+| `compare_to_sector` | Stock's return vs its sector index and Nifty 50, with a market-vs-company verdict | No |
 | `screen_by_theme` | Pre-built thematic screens | Yes |
 | `list_investment_themes` | Show all available themes | No |
 
@@ -343,7 +351,7 @@ analyze_annual_report("TCS", 2024, "What are the key risks?")
   7. Claude reasons over the excerpts to answer your question
 ```
 
-Results are cached — the same report is never re-downloaded or re-processed.
+Results are cached — the same report isn't re-downloaded or re-processed. Each result's `data.document.freshness` reports `last_indexed_at`, the PDF's `content_sha256`, its `etag` / `last_modified`, and `source_changed` (a HEAD check against the live PDF; `null` when the server gives no validators). If a report was revised or refiled, pass `force_reindex=True` to rebuild the index. The manifest lives at `~/.screener-mcp/index_manifest.json`.
 
 ---
 
@@ -377,9 +385,53 @@ Profit growth 5Years > 20 AND Sales growth 5Years > 15 AND Debt to equity < 0.3
 Dividend yield > 3 AND Return on equity > 15 AND Pledged percentage < 5
 ```
 
-Supported operators: `>` `<` `=` `AND`
+Supported operators: `>` `<` `>=` `<=` `=` `AND`
 
 Full field list in [CONTRIBUTING.md](CONTRIBUTING.md#screenerinscreenerinquery-field-names).
+
+### Technical clauses
+
+Mix these with fundamental clauses using `AND`:
+
+```
+52 week low distance < 10        % above the 52-week low
+52 week high distance > 30       % below the 52-week high
+RSI < 30                         14-day RSI
+Price above 200 DMA              also below / 20, 50, 200 DMA / "50 DMA above 200 DMA"
+Price vs 50 DMA < -5             % above (+) or below (−) a moving average
+Volume vs 20 day average > 2     today's volume ÷ 20-day average volume
+```
+
+```
+Return on capital employed > 15 AND Debt to equity < 0.5 AND 52 week low distance < 10
+RSI < 30 AND Price above 200 DMA                          (technical-only: no login needed)
+```
+
+Fundamental clauses run on Screener.in as usual. The technical clauses are then evaluated against up to `max_candidates` (default 150) of those matches, using daily price history from Screener's public chart API. A query with only technical clauses scans an NSE index instead (`universe`, default `nifty500`; also `nifty50`, `midcap100`, `smallcap100`, `smallcap250`, `bank`, `it`, `auto`, `pharma`, `fmcg`, `metal`, `realty`, `energy`, `defence`, `chemicals`, ...). If some candidates weren't checked, the response has `partial: true` and a `reason`. The 52-week range is based on closing prices.
+
+---
+
+## Response envelope
+
+Every tool returns the same shape:
+
+```json
+{
+  "status": "ok | partial | error",
+  "partial": false,
+  "warnings": ["MSUMI publishes no consolidated financials — showing standalone figures instead."],
+  "data": { "...": "..." },
+  "missing_fields": ["pe"],
+  "reason": "Screener.in's page had no value for these fields.",
+  "meta": { "symbol": "MSUMI", "financial_type": "standalone", "requested_symbol": "MOTHERSONWIR", "interpreted_as": "MSUMI" },
+  "error": { "type": "symbol_ambiguous", "message": "...", "candidates": [{ "symbol": "TMPV", "name": "Tata Motors Passenger Vehicles Ltd" }] }
+}
+```
+
+- **Blank source fields** show up in `missing_fields` with `status: "partial"`, and their values are `null`, never `""` or `0`.
+- **Companies without subsidiaries** have a blank `/consolidated/` page on Screener. The server falls back to standalone figures and says so in `warnings`.
+- **Non-canonical symbols** like `MOTHERSONWIR` resolve through Screener search. A confident match proceeds and is recorded in `meta.interpreted_as`. An ambiguous one returns `error.candidates` (top 3), so you can retry in one call.
+- **Implausible ratio history**, such as days-based metrics out of range or a Cash Conversion Cycle that doesn't equal debtor + inventory − payable days, is kept but marked `data_quality_flag: true`, with a reason.
 
 ---
 
@@ -440,6 +492,7 @@ Then point the client at `http://<host>:8000/mcp`.
 | [MCX India](https://www.mcxindia.com) | Commodity prices (best-effort) |
 
 - Financial data lags by ~1 quarter
+- Screener.in rate-limits bursts; the client caps concurrency (`SCREENER_MAX_CONCURRENCY`, default 4) and retries 429s with backoff, so large technical screens take ~15–60s
 - Document analysis requires machine-readable PDFs (scanned/image-only PDFs may fail)
 - NSE bulk deals only capture single trades > 0.5% of equity
 - `get_company_announcements` and `search_shareholder` depend on NSE's public API, which frequently rate-limits or blocks server IPs (403/404 responses) — if a query returns "no data found", it may be NSE blocking the request rather than an empty result
@@ -454,9 +507,14 @@ screener-mcp/
 ├── run_server.py
 ├── tests/                          # Offline registry + docs-consistency tests
 └── src/screener_mcp/
-    ├── server.py                   # FastMCP — all 31 tool definitions
+    ├── server.py                   # FastMCP — all 33 tool definitions
     ├── client.py                   # Screener.in HTTP client + auth
     ├── core/
+    │   ├── envelope.py             # Standard response envelope for every tool
+    │   ├── company_page.py         # Symbol resolution + page fetch + standalone fallback
+    │   ├── quality.py              # Missing-field detection + ratio sanity bounds
+    │   ├── technicals.py           # Price history → 52W range, DMA, RSI, volume ratio
+    │   ├── indices.py              # NSE index universes + sector benchmarks
     │   ├── nse_client.py           # NSE India API (announcements, filings)
     │   ├── rag.py                  # PDF → chunk → embed → query pipeline
     │   └── vector_store.py         # ChromaDB wrapper
@@ -466,6 +524,7 @@ screener-mcp/
     └── tools/
         ├── company_tools.py        # Company data tools
         ├── screening_tools.py      # Stock screening + themes
+        ├── technical_tools.py      # Technical screens, 52W-low candidates, sector-relative
         ├── analysis_tools.py       # Deep analysis, red flags, beginner
         ├── documents.py            # Annual reports + earnings calls (RAG)
         ├── announcements.py        # NSE corporate announcements + credit ratings
