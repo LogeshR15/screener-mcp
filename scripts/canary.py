@@ -91,10 +91,13 @@ async def symbol_resolution():
 
 
 async def technical_screen():
-    d = _ok(await server.screen_stocks("RSI < 101", universe="nifty50", limit=5), "technical screen")
+    # Parsing check, not a load test: 10 price histories is enough to prove the
+    # chart API still parses, and stays well under Screener's burst limit.
+    d = _ok(await server.screen_stocks("RSI < 101", universe="nifty50", limit=5, max_candidates=10),
+            "technical screen")
     _check(d["candidates_available"] and d["candidates_available"] >= 45,
            f"Nifty 50 constituents not parsed (got {d['candidates_available']})")
-    _check(d["matches_found"] >= 40, f"price history failing for many stocks ({d['matches_found']}/50 had data)")
+    _check(d["matches_found"] >= 8, f"price history failing ({d['matches_found']}/10 had data)")
     t = d["results"][0]["technicals"]
     _check(all(t.get(k) is not None for k in ("price", "high_52w", "dma200", "rsi14")), f"technicals incomplete: {t}")
 

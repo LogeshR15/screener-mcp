@@ -37,8 +37,11 @@
   balance sheet (Screener's top ratios don't include it). It's `null` for
   financial companies.
 - The company "about" text parses again after a Screener layout change.
-- Screener 429 responses are retried with backoff, and concurrent requests
-  are capped (`SCREENER_MAX_CONCURRENCY`).
+- **Rate limiting.** Requests are paced (`SCREENER_MIN_INTERVAL`) and capped
+  (`SCREENER_MAX_CONCURRENCY`). Any 429 now pauses every in-flight request
+  for a shared cooldown, where before each request backed off on its own
+  while the rest kept hitting Screener. Timeouts are retried too. Before
+  this, a cold 50-stock screen from a fresh IP got only 16 price histories.
 
 ### Added
 - **Technical clauses in `screen_stocks`:** 52-week low/high distance, RSI,

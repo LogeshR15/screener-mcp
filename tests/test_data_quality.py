@@ -640,3 +640,38 @@ async def test_portfolio_pnl_ignores_holdings_without_price(tmp_path, monkeypatc
     t = env["data"]["totals"]
     assert env["status"] == "partial" and env["missing_fields"] == ["BBB.price"]
     assert t["pnl"] == 100.0 and t["pnl_pct"] == 10.0   # not -4900 from counting BBB as worthless
+
+
+# ─── client pacing: one 429 must pause every request ──────────────────────────
+
+import asyncio as _asyncio  # noqa: E402
+
+import httpx as _httpx  # noqa: E402
+
+from screener_mcp import client as client_mod  # noqa: E402
+
+
+async def test_a_429_cools_down_all_concurrent_requests(monkeypatch):
+    monkeypatch.setattr(client_mod, "_MIN_INTERVAL", 0.0)
+    monkeypatch.setattr(client_mod.random, "uniform", lambda a, b: 0.0)
+    loop = _asyncio.get_running_loop()
+    hits = []
+    state = {"limited": False}
+
+    def handler(request):
+        hits.append((request.url.path, loop.time()))
+        if request.url.path == "/a" and not state["limited"]:
+            state["limited"] = True
+            return _httpx.Response(429, headers={"Retry-After": "1"})
+        return _httpx.Response(200, text="ok")
+
+    c = client_mod.ScreenerClient()
+    c._client = _httpx.AsyncClient(transport=_httpx.MockTransport(handler))
+    t0 = loop.time()
+    first = _asyncio.create_task(c._get("https://x/a"))
+    await _asyncio.sleep(0.05)              # let /a hit the 429 first
+    second = await c._get("https://x/b")    # a different request, issued during the cooldown
+    assert (await first).status_code == 200 and second.status_code == 200
+    b_time = next(t for p, t in hits if p == "/b")
+    assert b_time - t0 >= 0.9               # /b waited out the shared cooldown
+    await c._client.aclose()

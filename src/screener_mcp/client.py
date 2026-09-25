@@ -32,8 +32,15 @@ DEFAULT_HEADERS = {
 # Screener.in answers bursts with 429 Too Many Requests. Cap concurrent
 # requests and retry 429/503 with backoff so fan-out tools (technical screens,
 # comparisons) degrade into "slower" instead of "half the rows failed".
-_MAX_CONCURRENCY = int(os.getenv("SCREENER_MAX_CONCURRENCY", "4"))
-_MAX_RETRIES = 4
+_MAX_CONCURRENCY = int(os.getenv("SCREENER_MAX_CONCURRENCY", "3"))
+# Minimum spacing between request starts (seconds). Screener throttles bursts
+# hard — a cold 50-stock screen fired 4-wide got 429s and then stalled
+# requests — so pace requests instead of racing into the limit.
+_MIN_INTERVAL = float(os.getenv("SCREENER_MIN_INTERVAL", "0.25"))
+_MAX_RETRIES = 5
+_RETRYABLE_TRANSPORT = (
+    httpx.ConnectError, httpx.ProxyError, httpx.RemoteProtocolError, httpx.ReadError, httpx.TimeoutException,
+)
 
 
 class ScreenerClient:
@@ -43,29 +50,49 @@ class ScreenerClient:
         self._logged_in = False
         self._lock = asyncio.Lock()
         self._semaphore = asyncio.Semaphore(_MAX_CONCURRENCY)
+        self._pace_lock = asyncio.Lock()
+        self._next_slot = 0.0       # monotonic time the next request may start
+        self._cooldown_until = 0.0  # set by any 429 — pauses *all* requests
 
     @property
     def logged_in(self) -> bool:
         return self._logged_in
 
+    async def _wait_turn(self):
+        """Global pacing: honour any active 429 cooldown, then space request
+        starts at least _MIN_INTERVAL apart across all concurrent callers."""
+        async with self._pace_lock:
+            loop = asyncio.get_running_loop()
+            now = loop.time()
+            start = max(now, self._next_slot, self._cooldown_until)
+            self._next_slot = start + _MIN_INTERVAL
+        if start > now:
+            await asyncio.sleep(start - now)
+
+    def _cool_down(self, seconds: float):
+        """A 429 means the whole client is over the limit, not just this request."""
+        until = asyncio.get_running_loop().time() + seconds
+        self._cooldown_until = max(self._cooldown_until, until)
+
     async def _get(self, url: str, **kwargs) -> httpx.Response:
-        """GET with bounded concurrency and 429/503 retry-with-backoff."""
+        """GET with global pacing, bounded concurrency, a shared 429 cooldown,
+        and retry on 429/503 and transient transport errors (incl. timeouts)."""
         await self._ensure_client()
         for attempt in range(_MAX_RETRIES + 1):
-            try:
-                async with self._semaphore:
+            async with self._semaphore:
+                await self._wait_turn()
+                try:
                     resp = await self._client.get(url, **kwargs)
-            except (httpx.ConnectError, httpx.ProxyError, httpx.RemoteProtocolError, httpx.ReadError):
-                # transient transport failures — retry, then let the caller see it
-                if attempt == _MAX_RETRIES:
-                    raise
-                await asyncio.sleep(2 ** attempt + random.uniform(0, 0.5))
-                continue
+                except _RETRYABLE_TRANSPORT:
+                    if attempt == _MAX_RETRIES:
+                        raise
+                    self._cool_down(2 ** attempt)
+                    continue
             if resp.status_code not in (429, 503) or attempt == _MAX_RETRIES:
                 return resp
             retry_after = resp.headers.get("Retry-After", "")
-            delay = float(retry_after) if retry_after.isdigit() else 2 ** attempt
-            await asyncio.sleep(min(delay, 30) + random.uniform(0, 0.5))
+            delay = float(retry_after) if retry_after.isdigit() else 2 ** (attempt + 1)
+            self._cool_down(min(delay, 60) + random.uniform(0, 1))
         return resp
 
     async def _ensure_client(self):
