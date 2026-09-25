@@ -6,6 +6,10 @@ on:
 
 permissions:
   contents: read
+  # Lets the publish step use PyPI Trusted Publishing (no stored token). With
+  # PYPI_API_TOKEN set, the token is used; with it empty/unset, the action
+  # falls back to trusted publishing — which needs this OIDC permission.
+  id-token: write
 
 jobs:
   publish:
