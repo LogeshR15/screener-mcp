@@ -1,5 +1,50 @@
 # Changelog
 
+## 0.4.0 — unreleased
+
+### Added
+- **`get_analyst_targets`** returns two views. The first is Yahoo Finance's
+  consensus: mean, median, high and low target, analyst count, implied
+  upside and the buy/hold/sell split. The second is broker target prices
+  pulled from the last 60 days of headlines, with article links. Figures
+  that can't be targets, such as capex amounts in crores, are filtered out.
+  If one source is down the result is `partial`.
+- **`get_recent_news`**: recent headlines from Google News (Indian edition),
+  de-duplicated and newest first, with publisher, time and link.
+- **`get_relative_valuation`**: P/E and ROCE compared with the median of
+  every listed company in the stock's Screener industry, for up to 20
+  stocks. Stocks in the same industry share one cached fetch. Each stock
+  gets an assessment, including a possible "value trap" warning when a
+  low P/E comes with low ROCE. `screen_stocks(peer_relative=True)` adds
+  the same data to screen results.
+- **`get_moat_signals`** covers two things, with the thresholds stated in
+  the output:
+  - industry position: revenue share, rank, HHI concentration and CR4
+    across the whole industry;
+  - durability: ROCE consistency, operating-margin stability, sales CAGR
+    and promoter-holding stability.
+- **`get_forward_outlook`** has four independent parts:
+  - analyst EPS and revenue estimates for this year and next, with forward P/E;
+  - order wins from NSE filings, summing any rupee values stated in headlines;
+  - capex and expansion filings;
+  - earnings-call passages on guidance, order book and capex (needs the
+    `[ai]` extra).
+- **`screen_stocks` accepts `OR` and parentheses** alongside technical
+  clauses. Purely fundamental logic passes through to Screener unchanged.
+  When a technical clause sits under an `OR`, each alternative runs as its
+  own screen and the results are merged, with `matched_groups` on each row.
+- **Screen hygiene.** A default `min_market_cap` of ₹100 Cr is added unless
+  the query sets its own. Rows with implausible numbers (P/E below 1,
+  one-off profit spikes on a small base, profit above sales, negligible
+  sales, sub-₹1 price) are excluded and listed; `exclude_flagged=False`
+  keeps them, flagged.
+- **Price freshness in `get_company_overview`.** `data.price_freshness`
+  gives `price_as_of`, whether the price is an intraday print or the last
+  close, the previous close and the day's change. Stale prices are flagged.
+
+> 0.3.0 was tagged but never reached PyPI: the publish token was rejected.
+> 0.4.0 includes everything from 0.3.0.
+
 ## 0.3.0 — 2026-09-25
 
 ### Breaking

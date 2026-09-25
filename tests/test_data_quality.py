@@ -128,7 +128,11 @@ def fake_pages(monkeypatch):
     async def fake_get_page(symbol, financial_type):
         return pages.get((symbol, financial_type))
 
+    async def no_freshness(company_id):
+        return {}
+
     monkeypatch.setattr(cp, "_get_page", fake_get_page)
+    monkeypatch.setattr("screener_mcp.tools.company_tools.price_freshness", no_freshness)
     return pages
 
 
@@ -302,9 +306,27 @@ def test_fundamental_clauses_pass_through_untouched():
     assert [t.metric for t in technical] == ["pct_above_52w_low"]
 
 
-def test_technical_clauses_reject_or_groups():
-    with pytest.raises(ToolError):
-        split_query("Debt to equity < 0.5 OR Market Capitalization > 100 AND RSI < 30")
+def test_or_with_technical_clauses_expands_to_groups():
+    groups = tt.parse_query("Return on capital employed > 15 AND (RSI < 30 OR 52 week low distance < 5)")
+    assert [(f, [t.metric for t in te]) for f, te in groups] == [
+        (["Return on capital employed > 15"], ["rsi14"]),
+        (["Return on capital employed > 15"], ["pct_above_52w_low"]),
+    ]
+
+
+def test_fundamental_or_groups_stay_intact_for_screener():
+    groups = tt.parse_query("(Return on capital employed > 20 OR Return on equity > 25) AND Price above 200 DMA")
+    assert groups[0][0] == ["(Return on capital employed > 20 OR Return on equity > 25)"]
+    assert len(groups) == 1
+    # no technical clauses at all → passthrough, untouched
+    q = "(Return on capital employed > 20 OR Return on equity > 25) AND Debt to equity < 0.5"
+    assert tt.parse_query(q) == [([q], [])]
+
+
+def test_query_syntax_errors_are_structured():
+    for bad in ["(RSI < 30 AND Price above 200 DMA", "RSI < 30 AND", "RSI < 30 OR OR Price above 50 DMA"]:
+        with pytest.raises(ToolError):
+            tt.parse_query(bad)
 
 
 def test_indicator_math():
@@ -675,3 +697,219 @@ async def test_a_429_cools_down_all_concurrent_requests(monkeypatch):
     b_time = next(t for p, t in hits if p == "/b")
     assert b_time - t0 >= 0.9               # /b waited out the shared cooldown
     await c._client.aclose()
+
+
+# ─── news, analyst targets, price freshness ───────────────────────────────────
+
+from screener_mcp.core import yahoo as yahoo_mod  # noqa: E402
+from screener_mcp.tools import market_tools as mt  # noqa: E402
+
+RSS = b"""<?xml version="1.0"?><rss><channel>
+<item><title>Sell Tata Motors PV; target of Rs 310: Motilal Oswal - Moneycontrol.com</title>
+  <source>Moneycontrol.com</source><pubDate>Fri, 14 Aug 2026 06:00:00 GMT</pubDate><link>https://news/1</link></item>
+<item><title>Tata Motors PV rallies 5% as brokers raise TP to \xe2\x82\xb9424 - ET</title>
+  <source>ET</source><pubDate>Wed, 23 Sep 2026 07:00:00 GMT</pubDate><link>https://news/2</link></item>
+<item><title>Tata Motors PV rallies 5% as brokers raise TP to \xe2\x82\xb9424 - ET</title>
+  <source>ET</source><pubDate>Wed, 23 Sep 2026 07:05:00 GMT</pubDate><link>https://news/2b</link></item>
+<item><title>Tata Motors plans Rs 18,000 crore capex in FY27 - Mint</title>
+  <source>Mint</source><pubDate>Thu, 24 Sep 2026 07:00:00 GMT</pubDate><link>https://news/3</link></item>
+</channel></rss>"""
+
+
+@pytest.fixture
+def fake_rss(monkeypatch):
+    def handler(request):
+        return _httpx.Response(200, content=RSS)
+
+    real = _httpx.AsyncClient
+
+    def patched(*args, **kwargs):
+        kwargs["transport"] = _httpx.MockTransport(handler)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(mt.httpx, "AsyncClient", patched)
+
+
+def test_extract_targets_from_headlines():
+    assert mt._extract_targets("Sell X; target of Rs 310: Motilal Oswal") == [310.0]
+    assert mt._extract_targets("brokers raise TP to ₹1,424") == [1424.0]
+    assert mt._extract_targets("₹370 price target from ICICI Securities") == [370.0]
+    assert mt._extract_targets("Company plans Rs 18,000 crore capex") == []
+
+
+async def test_news_is_deduped_sorted_and_source_stripped(fake_rss):
+    items = await mt.fetch_news('"Tata Motors PV"', 14)
+    assert [i["url"] for i in items] == ["https://news/3", "https://news/2", "https://news/1"]
+    assert items[1]["title"] == "Tata Motors PV rallies 5% as brokers raise TP to ₹424"
+    assert items[0]["published"].startswith("2026-09-24")
+
+
+async def test_analyst_targets_partial_when_consensus_down(fake_pages, fake_rss, monkeypatch):
+    page = FULL_PAGE.replace("</h1>", '</h1><a href="https://www.nseindia.com/get-quotes/equity?symbol=TMPV">NSE: TMPV</a>')
+    page = page.replace('<span class="number">34.3</span>', '<span class="number">290</span>', 1)
+    fake_pages[("TMPV", "standalone")] = page
+
+    class DownYahoo:
+        async def quote_summary(self, ticker, modules):
+            raise yahoo_mod.YahooError("Yahoo Finance refused a session (HTTP 429)")
+
+    monkeypatch.setattr(mt, "get_yahoo_client", lambda: DownYahoo())
+    env = await server.get_analyst_targets("TMPV")
+    assert env["status"] == "partial" and "consensus" in env["missing_fields"]
+    targets = sorted(t for m in env["data"]["headline_target_mentions"] for t in m["targets_inr"])
+    assert targets == [310.0, 424.0]          # the capex figure is not mistaken for a target
+
+
+async def test_analyst_targets_consensus(fake_pages, fake_rss, monkeypatch):
+    page = FULL_PAGE.replace("</h1>", '</h1><a href="https://www.nseindia.com/get-quotes/equity?symbol=TMPV">NSE: TMPV</a>')
+    fake_pages[("TMPV", "standalone")] = page
+
+    class UpYahoo:
+        async def quote_summary(self, ticker, modules):
+            assert ticker == "TMPV.NS"
+            return {"financialData": {"numberOfAnalystOpinions": {"raw": 25}, "targetMeanPrice": {"raw": 361.0},
+                                      "targetMedianPrice": {"raw": 365.0}, "targetHighPrice": {"raw": 490.0},
+                                      "targetLowPrice": {"raw": 285.0}, "currentPrice": {"raw": 290.0},
+                                      "recommendationKey": "hold"},
+                    "recommendationTrend": {"trend": [{"period": "0m", "strongBuy": 4, "buy": 7, "hold": 6,
+                                                       "sell": 6, "strongSell": 2}]}}
+
+    monkeypatch.setattr(mt, "get_yahoo_client", lambda: UpYahoo())
+    env = await server.get_analyst_targets("TMPV")
+    c = env["data"]["consensus"]
+    assert env["status"] == "ok" and c["analysts"] == 25 and c["implied_upside_pct"] == 24.48
+    assert c["rating_split"]["sell"] == 6
+
+
+async def test_price_freshness_reports_close_vs_intraday(monkeypatch):
+    async def fake_history(company_id, days=400):
+        return history([100.0] * 10 + [110.0])
+
+    monkeypatch.setattr(tech_mod, "fetch_price_history", fake_history)
+    f = await tech_mod.price_freshness("1")
+    assert f["previous_close"] == 100.0 and f["day_change_pct"] == 10.0
+    assert f["price_basis"].startswith("last close") and f["stale"] is True   # fixture dates are in 2025
+
+
+# ─── screen hygiene ───────────────────────────────────────────────────────────
+
+from screener_mcp.tools import screening_tools as st_mod  # noqa: E402
+
+
+def test_sanity_flags_catch_junk_rows():
+    junk = {"Price to Earning": 0.4, "Market Capitalization": 0.1, "YOY Quarterly profit growth": 3700.0,
+            "Net Profit latest quarter": 5.0, "Sales latest quarter": 0.2, "Current Price": 0.8}
+    flags = st_mod.sanity_flags(junk)
+    assert len(flags) == 5
+    clean = {"Price to Earning": 22.0, "Market Capitalization": 50000.0, "YOY Quarterly profit growth": 18.0,
+             "Net Profit latest quarter": 500.0, "Sales latest quarter": 4000.0, "Current Price": 900.0}
+    assert st_mod.sanity_flags(clean) == []
+
+
+async def test_screen_adds_mcap_guard_and_drops_flagged_rows(monkeypatch):
+    seen = {}
+
+    async def fake_candidates(query=None, max_rows=25, **kwargs):
+        seen["query"] = query
+        return [
+            {"symbol": "GOOD", "name": "Good Co", "company_id": "1",
+             "fundamentals": {"Price to Earning": 12.0, "Market Capitalization": 5000.0}},
+            {"symbol": "JUNK", "name": "Junk Co", "company_id": "2",
+             "fundamentals": {"Price to Earning": 0.3, "Market Capitalization": 0.1}},
+        ], 2
+
+    monkeypatch.setattr(st_mod, "fetch_candidates", fake_candidates)
+    env = await server.screen_stocks("Price to Earning < 15 OR PEG Ratio < 1")
+    assert seen["query"] == "(Price to Earning < 15 OR PEG Ratio < 1) AND Market Capitalization > 100"
+    assert [r["symbol"] for r in env["data"]["results"]] == ["GOOD"]
+    assert env["data"]["excluded_for_data_quality"][0]["symbol"] == "JUNK"
+
+    env = await server.screen_stocks("Market Capitalization > 2000 AND Price to Earning < 15", exclude_flagged=False)
+    assert seen["query"] == "Market Capitalization > 2000 AND Price to Earning < 15"   # user's own mcap clause wins
+    assert {r["symbol"] for r in env["data"]["results"]} == {"GOOD", "JUNK"}
+
+
+async def test_or_groups_run_separately_and_merge(monkeypatch):
+    calls = []
+
+    async def fake_run(fundamental, technical, **kwargs):
+        calls.append((fundamental, [t.metric for t in technical]))
+        cid = "1" if technical[0].metric == "rsi14" else "2"
+        return ToolResult(data={"source": {"type": "index_constituents"}, "technical_filters": [],
+                                "candidates_available": 50, "candidates_scanned": 50,
+                                "results": [{"symbol": f"S{cid}", "company_id": cid, "fundamentals": {}}]})
+
+    monkeypatch.setattr(st_mod, "run_technical_screen", fake_run)
+    env = await server.screen_stocks("RSI < 30 OR Volume vs 20 day average > 3", universe="nifty50", limit=1)
+    assert env["data"]["matches_found"] == 2 and env["data"]["showing"] == 1   # count isn't capped by limit
+    env = await server.screen_stocks("RSI < 30 OR Volume vs 20 day average > 3", universe="nifty50")
+    calls[:] = calls[-2:]
+    assert [m for _, m in calls] == [["rsi14"], ["volume_vs_20d_avg"]]
+    assert {r["symbol"]: r["matched_groups"] for r in env["data"]["results"]} == {"S1": [1], "S2": [2]}
+    assert env["data"]["or_groups"] == 2
+
+
+# ─── industry, relative valuation, moat, forward outlook ──────────────────────
+
+from screener_mcp.core import industry as ind_mod  # noqa: E402
+from screener_mcp.tools import research_tools as rt  # noqa: E402
+
+
+def _ind_rows():
+    def r(cid, sales, pe, mcap, roce):
+        return {"symbol": f"C{cid}", "name": f"Co {cid}", "company_id": str(cid), "pe": pe, "market_cap": mcap,
+                "roce": roce, "sales_qtr": sales, "sales_growth_yoy": None, "dividend_yield": None}
+    return {"url": "/market/X/", "total_companies": 4, "fetched_companies": 4,
+            "rows": [r(1, 600, 20, 9000, 25), r(2, 200, 30, 4000, 15), r(3, 150, 10, 2000, 10), r(4, 50, 900, 100, 5)]}
+
+
+def test_industry_stats_hhi_median_and_position():
+    stats = ind_mod.industry_stats(_ind_rows())
+    assert stats["hhi"] == 4250 and stats["concentration"] == "highly concentrated"   # 60²+20²+15²+5²
+    assert stats["median_pe"] == 20 and stats["median_roce"] == 15                   # C4 excluded (< ₹500 Cr)
+    assert ind_mod.position_in(stats, "2") == {"revenue_share_pct": 20.0, "revenue_rank": 2, "of_companies_with_sales": 4}
+
+
+def test_parse_classification():
+    html = ('<a href="/market/IN02/" title="Broad Sector">Consumer Discretionary</a>'
+            '<a href="/market/IN02/IN0201/IN020102/IN020102001/" title="Industry">Auto Components &amp; Equipments</a>')
+    cls = ind_mod.parse_classification(html)
+    assert cls["Industry"] == {"name": "Auto Components & Equipments", "url": "/market/IN02/IN0201/IN020102/IN020102001/"}
+
+
+def test_valuation_labels():
+    assert "premium comes with clearly higher ROCE" in rt._valuation_label(40, 12)
+    assert "value trap" in rt._valuation_label(-35, -8)
+    assert rt._valuation_label(5, 0) == "valued in line with its industry"
+    assert "not comparable" in rt._valuation_label(None, None)
+
+
+async def test_estimates_ignore_placeholder_zeros_and_stale_years(monkeypatch):
+    class FakeYahoo:
+        async def quote_summary(self, ticker, modules):
+            return {"earningsTrend": {"trend": [
+                {"period": "0y", "endDate": "2025-03-31", "earningsEstimate": {"avg": {}},
+                 "revenueEstimate": {"avg": {"raw": 0}}},
+                {"period": "+1y", "endDate": "2099-03-31", "growth": {"raw": 0.18},
+                 "earningsEstimate": {"avg": {"raw": 11.24}, "numberOfAnalysts": {"raw": 20}},
+                 "revenueEstimate": {"avg": {"raw": 3.7482e11}, "growth": {"raw": 0.167}}},
+            ]}}
+
+    monkeypatch.setattr(rt, "get_yahoo_client", lambda: FakeYahoo())
+    est = await rt._estimates("BEL.NS", 394.0)
+    assert [y["period"] for y in est["years"]] == ["next fiscal year"]
+    y = est["years"][0]
+    assert y["revenue_estimate_cr"] == 37482 and y["forward_pe"] == 35.1 and y["eps_growth_pct"] == 18.0
+
+
+def test_order_matching_skips_non_orders_and_reads_amounts():
+    assert rt._ORDER_RE.search(rt._NOT_ORDERS_RE.sub(" ", "Company has informed the Exchange about Bagging of orders"))
+    assert not rt._ORDER_RE.search(rt._NOT_ORDERS_RE.sub(" ", "The Exchange, in order to ensure price discovery"))
+    assert rt._amount_cr("acceptance of an order worth Rs.83.81 Crores (Inclusive of GST)") == 83.81
+    assert rt._amount_cr("contract of INR 1.2 billion") == 120.0
+    assert rt._amount_cr("order worth ₹450 lakh") == 4.5
+
+
+def test_row_values_drop_ttm():
+    table = {"years": ["Mar 2024", "Mar 2025", "TTM"], "rows": [{"label": "OPM %", "values": ["10%", "12%", "13%"]}]}
+    assert rt._row_values(table, "OPM") == [10.0, 12.0]

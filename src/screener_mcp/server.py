@@ -1,7 +1,7 @@
 """
 Screener.in MCP Server — Indian Stock Research Assistant
 
-Tools exposed to Claude (33 total):
+Tools exposed to Claude (38 total):
   search_company              — find a company by name or symbol
   get_company_overview        — key ratios, about, price data
   get_financials              — P&L / Balance Sheet / Cash Flow / Ratios history
@@ -9,9 +9,14 @@ Tools exposed to Claude (33 total):
   get_shareholding_pattern    — promoter / FII / DII / public holding trend
   get_peer_comparison         — peer comparison table
   compare_companies           — side-by-side comparison of 2-5 companies
-  screen_stocks               — Screener.in query + technical clauses (52W distance, RSI, DMA, volume)
+  screen_stocks               — Screener.in query + technical clauses, AND/OR/parentheses, junk filtering
   get_52_week_low_candidates  — quality stocks near their 52-week low, in one call
   compare_to_sector           — stock's move vs its sector index and Nifty 50
+  get_recent_news             — recent news headlines (Google News)
+  get_analyst_targets         — consensus target price + broker targets in recent headlines
+  get_relative_valuation      — P/E and ROCE vs industry median, up to 20 stocks at once
+  get_moat_signals            — revenue share / rank / HHI + ROCE, margin, promoter durability
+  get_forward_outlook         — analyst estimates, order wins, capex filings, management guidance
   screen_by_theme             — pre-built thematic screens
   list_investment_themes      — list available theme screens
   get_full_analysis           — ALL data for deep-dive reasoning
@@ -80,6 +85,15 @@ from .tools.screening_tools import (
 from .tools.technical_tools import (
     get_52_week_low_candidates as _get_52w_low,
     compare_to_sector as _compare_to_sector,
+)
+from .tools.research_tools import (
+    get_relative_valuation as _get_relative_valuation,
+    get_moat_signals as _get_moat_signals,
+    get_forward_outlook as _get_forward_outlook,
+)
+from .tools.market_tools import (
+    get_recent_news as _get_recent_news,
+    get_analyst_targets as _get_analyst_targets,
 )
 from .tools.analysis_tools import (
     get_full_analysis as _full_analysis,
@@ -214,10 +228,13 @@ async def screen_stocks(
     order: str = "desc",
     universe: str = "",
     max_candidates: int = 150,
+    min_market_cap: float = 100,
+    exclude_flagged: bool = True,
+    peer_relative: bool = False,
 ) -> dict:
     """
     Run a stock screen: Screener.in fundamental fields and/or technical
-    (price-action) clauses, combined with AND.
+    (price-action) clauses, combined with AND, OR and parentheses.
 
     Fundamental fields (Screener.in syntax, exact spelling matters):
       Market Capitalization, Current Price, Price to Earning, Price to book value,
@@ -236,8 +253,23 @@ async def screen_stocks(
       Price vs 50 DMA < -5             — % above(+)/below(−) a DMA
       Volume vs 20 day average > 2     — today's volume ÷ 20-day average (spike detection)
 
-    Operators: > < >= <= =, joined with AND. Technical clauses can't be mixed
-    with OR groups.
+    Operators: > < >= <= =, combined with AND / OR and parentheses, e.g.
+      "(Return on capital employed > 20 OR Return on equity > 25) AND Debt to equity < 0.5"
+      "Return on capital employed > 15 AND (RSI < 30 OR 52 week low distance < 5)"
+    Purely fundamental OR logic runs natively on Screener; when technical
+    clauses sit under an OR, each alternative runs as its own screen (up to 6)
+    and results are merged — each result lists matched_groups.
+
+    Result hygiene (on by default):
+      min_market_cap: ₹ Cr floor added to the Screener query unless the query
+                      already has a Market Capitalization clause (0 = off)
+      exclude_flagged: drop rows with implausible numbers (P/E < 1, >500%
+                      profit spike on a small base, profit > sales, negligible
+                      sales, sub-₹1 price) — they're listed in
+                      excluded_for_data_quality. False = keep them, flagged.
+
+    peer_relative: add each result's P/E and ROCE vs its industry median
+                   (first 20 results; slower — one industry fetch per industry).
 
     How it runs: fundamental clauses go to Screener.in (login required);
     technical clauses are then checked against up to `max_candidates` of those
@@ -249,19 +281,82 @@ async def screen_stocks(
     sort_by: a technical metric (rsi14, pct_above_52w_low, volume_vs_20d_avg, ...)
              or a result column name. Default: the first technical filter.
 
-    Examples:
-      "Market Capitalization < 5000 AND Return on capital employed > 15 AND Debt to equity < 0.5"
-      "Return on capital employed > 15 AND Debt to equity < 0.5 AND 52 week low distance < 10"
-      "RSI < 30 AND Price above 200 DMA"
-      "Volume vs 20 day average > 3 AND Price above 50 DMA"  (universe="midcap100")
-
     Returns partial=true (with a reason) if only some candidates could be
     checked — e.g. more fundamental matches than max_candidates.
     """
     return await _safe(_screen)(
-        query, sort_by=sort_by, order=order, limit=limit,
-        universe=universe, max_candidates=max_candidates,
+        query, sort_by=sort_by, order=order, limit=limit, universe=universe,
+        max_candidates=max_candidates, min_market_cap=min_market_cap,
+        exclude_flagged=exclude_flagged, peer_relative=peer_relative,
     )
+
+
+@mcp.tool(annotations={"title": "Relative Valuation", "readOnlyHint": True, "openWorldHint": True})
+async def get_relative_valuation(symbols: list[str] | str) -> dict:
+    """
+    Is this P/E cheap *for its industry*? Compares each stock's P/E and ROCE
+    with the median of every listed company in its Screener industry, for up
+    to 20 stocks in one call (stocks in the same industry share one fetch, so
+    this scales across a screen's results).
+
+    Returns per stock: industry, P/E vs industry median (%), ROCE vs median
+    (pp), and a one-line assessment (e.g. "at a premium to its industry, but
+    the premium comes with clearly higher ROCE", or a possible value trap).
+    Sorted cheapest-vs-industry first.
+
+    symbols: list (["HBLENGINE", "BSE", "TCS"]) or comma-separated string
+
+    Tip: screen_stocks(..., peer_relative=True) attaches the same data to
+    screen results directly.
+    """
+    return await _safe(_get_relative_valuation)(symbols)
+
+
+@mcp.tool(annotations={"title": "Moat Signals", "readOnlyHint": True, "openWorldHint": True})
+async def get_moat_signals(symbol: str) -> dict:
+    """
+    Quantitative moat proxies for a company — market position plus how
+    durable its economics have been.
+
+    Market position (from every listed company in its Screener industry):
+      revenue share and rank by quarterly sales, industry concentration (HHI
+      and CR4 — fragmented / moderately / highly concentrated), market-leader
+      and top-3 flags.
+    Durability (from up to ~12 years of statements):
+      ROCE consistency (years ≥ 15%, median, min), operating-margin stability
+      (standard deviation), sales CAGR, promoter-holding stability.
+    Plus a signals summary with the thresholds used.
+
+    These are proxies — listed-company revenue share misses unlisted and
+    imported competitors, and brand / switching costs / licences still need
+    judgement (check the annual report and earnings calls).
+
+    symbol: NSE/BSE symbol or company name
+    """
+    return await _safe(_get_moat_signals)(symbol)
+
+
+@mcp.tool(annotations={"title": "Forward Outlook", "readOnlyHint": True, "openWorldHint": True})
+async def get_forward_outlook(symbol: str, days: int = 180, include_earnings_call: bool = True) -> dict:
+    """
+    Forward-looking inputs in one call, instead of extrapolating trailing data:
+
+      1. Analyst estimates — current and next fiscal-year EPS and revenue
+         consensus (low/high, growth, analyst count) and forward P/E.
+      2. Order wins — NSE filings in the last `days` announcing orders,
+         contracts, LoAs, with rupee values stated in the headline summed.
+      3. Capex & expansion — filings about new capacity, plants, commissioning.
+      4. Management guidance — the most relevant passages from the latest
+         earnings call on guidance, order book / pipeline, and capex
+         (needs the [ai] extra; otherwise returns an install hint).
+
+    Each part is independent — if one source is down the result is partial.
+
+    symbol: NSE/BSE symbol or company name
+    days: filing look-back (30-730, default 180)
+    include_earnings_call: set False to skip the transcript step (faster)
+    """
+    return await _safe(_get_forward_outlook)(symbol, days, include_earnings_call)
 
 
 @mcp.tool(annotations={"title": "52-Week-Low Candidates", "readOnlyHint": True, "openWorldHint": True})
@@ -320,6 +415,52 @@ async def compare_to_sector(symbol: str, days: int = 30, benchmark: str = "") ->
     return await _safe(_compare_to_sector)(symbol, days, benchmark)
 
 
+@mcp.tool(annotations={"title": "Get Recent News", "readOnlyHint": True, "openWorldHint": True})
+async def get_recent_news(symbol: str, days: int = 14, limit: int = 20) -> dict:
+    """
+    Recent news headlines about a company (Google News, Indian edition).
+
+    Returns publisher, publish time (UTC) and link for each headline, newest
+    first, de-duplicated. Use it for the "what's happened lately" context that
+    financial statements can't show — results reactions, brokerage calls,
+    management moves, price hikes, regulatory news. For the company's own
+    exchange filings use get_company_announcements instead.
+
+    symbol: NSE/BSE symbol or company name
+    days: look-back window (1-90, default 14)
+    limit: max headlines (default 20)
+
+    Examples:
+      get_recent_news("TMPV")
+      get_recent_news("Garden Reach", days=30)
+    """
+    return await _safe(_get_recent_news)(symbol, days, limit)
+
+
+@mcp.tool(annotations={"title": "Get Analyst Targets", "readOnlyHint": True, "openWorldHint": True})
+async def get_analyst_targets(symbol: str) -> dict:
+    """
+    Analyst price targets for a stock, from two independent sources:
+
+    1. Consensus (Yahoo Finance): mean / median / high / low target, number
+       of analysts, implied upside vs the current price, and the
+       strong-buy/buy/hold/sell/strong-sell split.
+    2. Broker targets mentioned in the last 60 days of news headlines
+       (e.g. "ICICI Securities target ₹370"), with links to each article.
+
+    The two come from different broker sets and dates, so they rarely match;
+    both are labelled with their source. Returns partial=true if one source is
+    unavailable, or if the stock has no analyst coverage.
+
+    symbol: NSE/BSE symbol or company name
+
+    Examples:
+      get_analyst_targets("TMPV")
+      get_analyst_targets("HDFCBANK")
+    """
+    return await _safe(_get_analyst_targets)(symbol)
+
+
 @mcp.tool(annotations={"title": "Screen By Theme", "readOnlyHint": True, "openWorldHint": True})
 async def screen_by_theme(theme: str, limit: int = 20) -> dict:
     """
@@ -365,6 +506,10 @@ async def list_investment_themes() -> dict:
 async def get_company_overview(symbol: str, financial_type: str = "consolidated") -> dict:
     """
     Get a company's key ratios, current price, 52-week range, and about section.
+
+    data.price_freshness says when the price is from (price_as_of), whether
+    it's an intraday print or the last close, the previous close and the
+    day's change — so you can tell how current "current_price" is.
 
     symbol: NSE/BSE symbol (e.g., "TCS", "INFY", "RELIANCE", "HDFCBANK")
     financial_type: "consolidated" (default) or "standalone"

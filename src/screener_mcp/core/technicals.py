@@ -284,3 +284,34 @@ def compute_technicals(hist: PriceHistory, today: Optional[date] = None) -> tupl
         "basis": "daily closes (52W range is close-based)",
     }
     return metrics, warnings
+
+
+async def price_freshness(company_id: str) -> dict:
+    """When is the latest price from, and is it a live intraday print or a close?
+
+    Uses the (cached) chart series: its last bar is today's during market
+    hours, otherwise the latest close.
+    """
+    hist = await fetch_price_history(company_id)
+    if not hist.closes:
+        return {}
+    now = datetime.now(_IST)
+    last_date = hist.dates[-1]
+    intraday = _market_open(now) and last_date == now.strftime("%Y-%m-%d")
+    prev = hist.closes[-2] if len(hist.closes) > 1 else None
+    age_days = (now.date() - datetime.strptime(last_date, "%Y-%m-%d").date()).days
+    out = {
+        "price_as_of": last_date,
+        "price_basis": (
+            "intraday — market open, latest trade (may be delayed a few minutes)"
+            if intraday else f"last close ({last_date})"
+        ),
+        "market_open_now": _market_open(now),
+        "last_close_or_trade": round(hist.closes[-1], 2),
+        "previous_close": round(prev, 2) if prev else None,
+        "day_change_pct": round((hist.closes[-1] / prev - 1) * 100, 2) if prev else None,
+    }
+    if age_days > 4:
+        out["stale"] = True
+        out["stale_note"] = f"Latest price is {age_days} days old — the stock may be suspended or thinly traded."
+    return out
