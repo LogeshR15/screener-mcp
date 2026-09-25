@@ -498,7 +498,7 @@ Then point the client at `http://<host>:8000/mcp`.
 | [Yahoo Finance](https://finance.yahoo.com) chart API | International commodity benchmarks (COMEX, ICE Brent, NYMEX) and USD/INR |
 
 - Financial data lags by ~1 quarter
-- Screener.in rate-limits bursts. The client caps concurrency (`SCREENER_MAX_CONCURRENCY`, default 4) and retries 429s with backoff. Price history is cached in `~/.screener-mcp/price_cache`: during market hours for 15 minutes, otherwise until the next session. A cold technical screen can take a minute; repeat screens are fast. Set `SCREENER_PRICE_CACHE=0` to disable the cache
+- Screener.in rate-limits bursts. The client paces requests (`SCREENER_MIN_INTERVAL`, default 0.25s) and caps concurrency (`SCREENER_MAX_CONCURRENCY`, default 3). Any 429 pauses all requests for a shared cooldown, and requests are then retried. Price history is cached in `~/.screener-mcp/price_cache`: during market hours for 15 minutes, otherwise until the next session. A cold technical screen can take a minute; repeat screens are fast. Set `SCREENER_PRICE_CACHE=0` to disable the cache
 - Commodity prices are the international benchmarks MCX contracts track. The INR figure is a plain FX conversion, before import duty and GST, so it's below the MCX quote. Nickel has no free feed and returns `partial`
 - For banks, NBFCs and insurers, debt-to-equity and working-capital-day checks are skipped because they aren't meaningful for lenders. Judge these companies on ROE, asset quality and capital adequacy
 - Document analysis requires machine-readable PDFs (scanned/image-only PDFs may fail)
