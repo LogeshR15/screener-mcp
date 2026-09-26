@@ -913,3 +913,46 @@ def test_order_matching_skips_non_orders_and_reads_amounts():
 def test_row_values_drop_ttm():
     table = {"years": ["Mar 2024", "Mar 2025", "TTM"], "rows": [{"label": "OPM %", "values": ["10%", "12%", "13%"]}]}
     assert rt._row_values(table, "OPM") == [10.0, 12.0]
+
+
+# ─── regressions from the real-user test pass ─────────────────────────────────
+
+@pytest.mark.parametrize("headline,is_order", [
+    ("Titan Company Limited has informed the Exchange regarding the Trading Window closure", False),
+    ("SBIN has informed the Exchange about Newspaper Publication", False),
+    ("The Exchange, in order to ensure orderly trading, has sought clarification", False),
+    ("HBL has informed the Exchange about Bagging/Receiving of orders/contracts", True),
+    ("BEL secures orders worth Rs 572 crore", True),
+])
+def test_order_matching_regressions(headline, is_order):
+    matched = bool(rt._ORDER_RE.search(rt._NOT_ORDERS_RE.sub(" ", headline))) and not rt._EXCLUDE_RE.search(headline)
+    assert matched is is_order
+
+
+def test_ordinary_shares_beat_partly_paid():
+    assert score_candidate("Adani Enterprises", Candidate("ADANIENT", "Adani Enterprises Ltd")) - \
+        score_candidate("Adani Enterprises", Candidate("ADANIENPP1", "Adani Enterprises Ltd Partly Paidup")) > 0.1
+
+
+async def test_universe_only_screen_has_no_mcap_guard_warning_and_counts_once(monkeypatch):
+    async def fake_run(fundamental, technical, **kwargs):
+        assert fundamental == []       # no guard pushed into a universe scan
+        return ToolResult(data={"source": {"type": "index_constituents", "universe": "nifty50"},
+                                "technical_filters": [], "candidates_available": 50, "candidates_scanned": 50,
+                                "matches_found": 0, "results": []})
+
+    monkeypatch.setattr(st_mod, "run_technical_screen", fake_run)
+    env = await server.screen_stocks("RSI < 30 OR Volume vs 20 day average > 3", universe="nifty50")
+    assert not any(w.startswith("Added") for w in env["warnings"])
+    assert any("technical filters among the 50 scanned" in w for w in env["warnings"])
+    assert env["data"]["candidates_scanned"] == 50 and len(env["data"]["groups"]) == 2
+
+
+async def test_tool_calls_time_out_with_structured_error(monkeypatch):
+    monkeypatch.setattr(server, "_TOOL_TIMEOUT", 0.05)
+
+    async def slow():
+        await _asyncio.sleep(1)
+
+    env = await server._safe(slow)()
+    assert env["status"] == "error" and env["error"]["type"] == "timeout"

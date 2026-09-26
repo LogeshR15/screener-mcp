@@ -61,25 +61,37 @@ def _row(r: dict) -> dict:
     }
 
 
-async def fetch_industry(url: str, max_pages: int = 6) -> dict:
-    """All (or the top ``max_pages``×25 by quarterly sales) companies in an industry.
+async def fetch_industry(url: str, max_pages: int = 6, by: str = "sales") -> dict:
+    """Companies in an industry, from Screener's industry page.
 
-    Sorted by sales so the pages we fetch hold nearly all of the industry's
-    revenue — the tail beyond them barely moves shares or HHI.
+    by="sales": sorted by quarterly sales and fetched up to ``max_pages`` —
+        the pages we fetch hold nearly all of the industry's revenue, so shares
+        and HHI are accurate (the tail beyond barely moves them).
+    by="mcap": sorted by market cap, stopping once a page's smallest company
+        falls below MEDIAN_MIN_MCAP — exactly the companies the medians use,
+        usually a single page. Used for peer-relative valuation.
     """
-    now = time.monotonic()
-    hit = _cache.get(url)
-    if hit and now - hit[0] < _CACHE_TTL:
-        return hit[1]
-    lock = _locks.setdefault(url, asyncio.Lock())
-    async with lock:
-        hit = _cache.get(url)
+    key = (url, by)
+
+    def cached():
+        hit = _cache.get(key)
         if hit and time.monotonic() - hit[0] < _CACHE_TTL:
-            return hit[1]
+            res = hit[1]
+            if by == "mcap" or res["pages_fetched"] >= min(max_pages, res["total_pages"]):
+                return res
+        return None
+
+    if (hit := cached()) is not None:
+        return hit
+    lock = _locks.setdefault(key, asyncio.Lock())
+    async with lock:
+        if (hit := cached()) is not None:
+            return hit
         client = await get_client()
+        sort = "sales latest quarter" if by == "sales" else "market capitalization"
 
         async def page(n: int) -> dict:
-            params = {"sort": "sales latest quarter", "order": "desc"}
+            params = {"sort": sort, "order": "desc"}
             if n > 1:
                 params["page"] = str(n)
             return parse_screen_results(await client.get_html(url, params=params))
@@ -87,8 +99,16 @@ async def fetch_industry(url: str, max_pages: int = 6) -> dict:
         first = await page(1)
         total_pages = first.get("total_pages") or 1
         pages = [first]
-        if total_pages > 1:
-            pages += await asyncio.gather(*[page(n) for n in range(2, min(total_pages, max_pages) + 1)])
+        if by == "sales":
+            if total_pages > 1:
+                pages += await asyncio.gather(*[page(n) for n in range(2, min(total_pages, max_pages) + 1)])
+        else:
+            while len(pages) < min(total_pages, max_pages):
+                last = pages[-1].get("companies") or []
+                smallest = to_number(last[-1].get("Market Capitalization")) if last else None
+                if smallest is None or smallest < MEDIAN_MIN_MCAP:
+                    break
+                pages.append(await page(len(pages) + 1))
         rows, seen = [], set()
         for p in pages:
             for r in p.get("companies", []):
@@ -98,11 +118,14 @@ async def fetch_industry(url: str, max_pages: int = 6) -> dict:
                     rows.append(row)
         result = {
             "url": url,
+            "sorted_by": by,
+            "total_pages": total_pages,
+            "pages_fetched": len(pages),
             "total_companies": first.get("total_results") or len(rows),
             "fetched_companies": len(rows),
             "rows": rows,
         }
-        _cache[url] = (time.monotonic(), result)
+        _cache[key] = (time.monotonic(), result)
         return result
 
 

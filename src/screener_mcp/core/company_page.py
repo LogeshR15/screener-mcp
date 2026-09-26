@@ -149,7 +149,9 @@ def score_candidate(query: str, cand: Candidate) -> float:
         return 1.0
     symbol_sim = difflib.SequenceMatcher(None, q, sym).ratio() if sym else 0.0
     score = max(symbol_sim, _name_match(q, cand.name)[0])
-    if re.search(r"\((merged|delisted|old)\)", cand.name, re.I):
+    # merged/delisted entities and alternate share classes (partly paid, rights
+    # entitlements) share the parent's name; prefer the ordinary shares.
+    if re.search(r"\((merged|delisted|old)\)|partly\s*paid|\brights?\b|\bRE\b$", cand.name, re.I):
         score *= 0.85
     return score
 

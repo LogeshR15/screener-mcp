@@ -59,7 +59,8 @@ async def relative_valuation_for(symbol: str) -> dict:
     level = next((lvl for lvl in ("Industry", "Broad Industry", "Sector") if lvl in cls), None)
     if not level:
         raise ToolError(f"No industry classification on {page.symbol}'s Screener page.", "no_data")
-    stats = industry_stats(await fetch_industry(cls[level]["url"]))
+    # Medians only use companies ≥ ₹500 Cr: fetch by market cap and stop below that.
+    stats = industry_stats(await fetch_industry(cls[level]["url"], max_pages=8, by="mcap"))
     pe = to_number(overview_field(ov, "pe"))
     roce = to_number(overview_field(ov, "roce"))
     med_pe, med_roce = stats["median_pe"], stats["median_roce"]
@@ -202,6 +203,17 @@ async def get_moat_signals(symbol: str) -> ToolResult:
                         "(small share, or no sales reported last quarter).")
 
     durability = _durability(page, financial)
+    if page.financial_type == "consolidated" and durability["years_of_history"] < 8:
+        # Consolidated statements often start only when subsidiaries were formed
+        # (IRCTC: 4 years); standalone usually goes back much further.
+        try:
+            standalone = await fetch_company_page(page.symbol, "standalone")
+            alt = _durability(standalone, financial)
+            if alt["years_of_history"] > durability["years_of_history"]:
+                durability = {**alt, "statement_basis": "standalone (longer history than consolidated)"}
+        except Exception:
+            pass
+    durability.setdefault("statement_basis", page.financial_type)
 
     signals = {}
     if position:
@@ -221,6 +233,12 @@ async def get_moat_signals(symbol: str) -> ToolResult:
 
     if financial:
         warnings.append("Financial company — ROCE and operating-margin signals skipped (not meaningful for lenders).")
+    if not cls and not durability["years_of_history"]:
+        raise ToolError(
+            f"{page.symbol} has no industry classification or financial statements on Screener.in — it looks "
+            "like an ETF, index or fund. Moat signals apply to operating companies.",
+            "not_applicable",
+        )
 
     return ToolResult(
         data={
@@ -253,12 +271,13 @@ async def get_moat_signals(symbol: str) -> ToolResult:
 # ─── forward outlook ──────────────────────────────────────────────────────────
 
 _ORDER_RE = re.compile(
-    r"\b(order|orders|contract|letter of (award|intent)|\bLoA\b|\bLoI\b|work order|purchase order|"
-    r"bagged|secures?|wins?|awarded|empanel)", re.I)
+    r"\b(orders?|contracts?|letter of (award|intent)|LoA|LoI|work order|purchase order|"
+    r"bagged|bagging|secures?|wins?|won|awarded|empanell?ed)\b", re.I)
 # phrases that contain "order"/"win" but aren't order wins
 _NOT_ORDERS_RE = re.compile(r"\bin order to\b|\border of\b|\bwinding\b", re.I)
 _EXCLUDE_RE = re.compile(
-    r"\b(court|tribunal|penalty|order dated|significant increase in volume|price movement|clarification)\b", re.I)
+    r"\b(court|tribunal|penalty|order dated|significant increase in volume|price movement|clarification|"
+    r"trading window|newspaper|record date|book closure)\b", re.I)
 _CAPEX_RE = re.compile(
     r"\b(capex|capital expenditure|capacity (expansion|addition|enhancement)|new (plant|facility|unit)|"
     r"commission(ed|ing)|greenfield|brownfield|expansion)\b", re.I)
