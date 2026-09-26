@@ -74,8 +74,10 @@ If these return real data, the server is working end to end.
 ## What it provides
 
 - **Company research** — financials, ratios, shareholding, peer comparison, red-flag detection (no login required)
-- **Stock screening** — custom Screener.in-style queries, pre-built thematic screens, and technical clauses (52-week distance, RSI, DMA, volume spikes). Fundamental screens need a free Screener.in login; technical-only screens don't
+- **Stock screening** — custom Screener.in-style queries with `AND` / `OR` / parentheses, pre-built thematic screens, and technical clauses (52-week distance, RSI, DMA, volume spikes). Junk rows are filtered out by default. Fundamental screens need a free Screener.in login; technical-only screens don't
 - **Price-action context** — quality stocks near 52-week lows in one call, and a stock's move vs its sector index and the Nifty 50
+- **Valuation & quality context** — P/E and ROCE vs the industry median for up to 20 stocks at once, and moat proxies: revenue share, rank, industry concentration, and how durable returns and margins have been
+- **Forward-looking & Street view** — analyst EPS/revenue estimates and target prices, order wins and capex filings, management guidance from earnings calls, and recent news
 - **Document analysis** — ask questions over annual reports and earnings call transcripts using a local RAG pipeline
 - **Corporate events** — NSE announcements, bulk deals, insider trading disclosures, promoter pledge trends, credit ratings
 - **Market & research** — commodity price context, local research notes
@@ -113,9 +115,10 @@ Claude (Code / Desktop)
         ▼
   screener-mcp
         │
-        ├──► Screener.in   (financials, ratios, screening)
-        ├──► NSE India     (announcements, bulk deals, filings)
-        └──► Yahoo Finance (international commodity benchmarks)
+        ├──► Screener.in   (financials, ratios, screening, industry pages, price history)
+        ├──► NSE India     (announcements, order wins, bulk deals, insider trades)
+        ├──► Yahoo Finance (analyst consensus & estimates, commodity benchmarks)
+        └──► Google News   (recent headlines, broker target mentions)
         │
         ▼
   Research data (parsed, cached, indexed)
@@ -240,6 +243,7 @@ For remote/network deployment rather than a local stdio process, see [Remote HTT
 | Company research (financials, ratios, shareholding, peers, red flags) | No |
 | Stock screening with fundamental clauses (`screen_stocks`, `screen_by_theme`) | Yes |
 | Technical-only screens, `get_52_week_low_candidates`, `compare_to_sector` | No (a login lets `get_52_week_low_candidates` scan the whole market instead of an index) |
+| `get_relative_valuation`, `get_moat_signals`, `get_forward_outlook`, `get_analyst_targets`, `get_recent_news` | No (`get_forward_outlook`'s earnings-call guidance needs the `[ai]` extra) |
 | NSE announcements, bulk deals, credit ratings, commodities | No |
 | Document analysis, notebook, portfolio | No |
 

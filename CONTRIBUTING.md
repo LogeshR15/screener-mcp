@@ -271,6 +271,34 @@ Operators: `>` `<` `=` `AND`
 
 ---
 
+## Releasing
+
+Publishing to PyPI happens automatically when a GitHub release is published
+([`publish.yml`](.github/workflows/publish.yml)). The workflow runs the tests,
+builds the package and uploads it.
+
+1. Bump `version` in `pyproject.toml` and date the entry in `CHANGELOG.md`. The
+   workflow fails if the release tag doesn't match the version, and PyPI never
+   accepts the same version twice.
+2. Merge to `main`, then run `gh release create vX.Y.Z --notes-file <changelog section>`.
+
+**PyPI authentication** can be set up either way:
+- **Trusted Publishing (preferred, no token):** on PyPI, open *Manage project →
+  Publishing* and add a GitHub publisher (owner `LogeshR15`, repository
+  `screener-mcp`, workflow `publish.yml`, no environment). Then remove the
+  `PYPI_API_TOKEN` secret, since an empty secret still overrides trusted
+  publishing.
+- **API token:** create a project-scoped token on PyPI and store it with
+  `gh secret set PYPI_API_TOKEN` **from a real terminal**. Run without a terminal,
+  for example through Claude Code's `!` prefix, it can't prompt you and saves an
+  empty value.
+
+If the upload step fails, fix the authentication and re-publish the same tag:
+delete the release and tag, then recreate them. Nothing reached PyPI, so no
+version was used up.
+
+---
+
 ## Questions?
 
 Open an issue at [github.com/LogeshR15/screener-mcp/issues](https://github.com/LogeshR15/screener-mcp/issues)

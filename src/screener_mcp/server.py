@@ -1236,6 +1236,12 @@ I'm your Indian stock research copilot powered by Screener.in data.
 - "Find turnaround stories in mid-cap space"
 - "What is Titan's promoter holding trend?"
 - "Show me the last 4 quarters for HDFC Bank"
+- "Quality stocks within 10% of their 52-week low"
+- "Has MSUMI fallen more than the auto sector over the last 60 days?"
+- "Which of these stocks trade below their industry P/E?"
+- "Is MSUMI a market leader with durable returns?"
+- "What's BEL's order pipeline, guidance and analyst estimates?"
+- "Analyst targets and recent news for TMPV"
 
 ### What I fetch from Screener.in:
 - 10+ years of financials (P&L, Balance Sheet, Cash Flow)
@@ -1243,7 +1249,17 @@ I'm your Indian stock research copilot powered by Screener.in data.
 - Quarterly results (last 8 quarters)
 - Shareholding patterns (promoter, FII, DII)
 - Peer comparison tables
-- Stock screening by custom filters or pre-built themes
+- Stock screening by custom filters (AND / OR / parentheses), technical
+  clauses, or pre-built themes, with junk rows filtered out
+- Industry pages: medians, revenue share and concentration for every industry
+
+### Beyond Screener.in:
+- NSE filings: announcements, order wins, capex, bulk deals, insider trades
+- Yahoo Finance: analyst consensus targets, EPS/revenue estimates
+- Google News: recent headlines and broker target mentions
+
+Every tool returns {status, partial, warnings, data, ...}. Treat status
+"partial" or "error" as real signals, and never read null as zero.
 
 ### Setup for full data:
 Set in your environment:
@@ -1253,7 +1269,8 @@ Set in your environment:
 Without login, some data fields may be restricted (Screener.in requires login for full data).
 
 ## Limitations
-- Data comes from Screener.in and may lag by 1 quarter
+- Financial statements come from Screener.in and may lag by 1 quarter; check
+  price_freshness on the overview for how current the price is
 - I cannot predict stock prices or guarantee returns
 - Always verify critical data directly on Screener.in
 - Past financial performance does not guarantee future results
@@ -1270,10 +1287,17 @@ def query_syntax_guide() -> str:
   FIELD OPERATOR VALUE [AND FIELD OPERATOR VALUE ...]
 
 ## Operators
-  >   greater than
-  <   less than
-  =   equals
-  AND combine conditions
+  >  <  >=  <=  =       comparisons
+  AND  OR  ( )          combine conditions, e.g.
+      (Return on capital employed > 20 OR Return on equity > 25) AND Debt to equity < 0.5
+
+## Technical clauses (evaluated from daily prices; mix freely with the above)
+  52 week low distance < 10        % above the 52-week low
+  52 week high distance > 30       % below the 52-week high
+  RSI < 30                         14-day RSI
+  Price above 200 DMA              also below / 20, 50, 200 DMA / "50 DMA above 200 DMA"
+  Price vs 50 DMA < -5             % above(+)/below(−) a moving average
+  Volume vs 20 day average > 2     volume spike
 
 ## Common Fields (exact spelling)
   Market Capitalization          (₹ Crore)
