@@ -1,14 +1,14 @@
 """
 Screener.in MCP Server — Indian Stock Research Assistant
 
-Tools exposed to Claude (38 total):
+Tools exposed to Claude (30 total):
   search_company              — find a company by name or symbol
   get_company_overview        — key ratios, about, price data
-  get_financials              — P&L / Balance Sheet / Cash Flow / Ratios history
+  get_financials              — P&L / Balance Sheet / Cash Flow / Ratios history (incl. P/E, P/B, ROE, D/E)
   get_quarterly_results       — last 8 quarters of results
-  get_shareholding_pattern    — promoter / FII / DII / public holding trend
+  get_shareholding_pattern    — holding trends by category, promoter group and pledge assessment
   get_peer_comparison         — peer comparison table
-  compare_companies           — side-by-side comparison of 2-5 companies
+  compare_companies           — 2-6 companies side by side (JSON + interactive dashboard)
   screen_stocks               — Screener.in query + technical clauses, AND/OR/parentheses, junk filtering
   get_52_week_low_candidates  — quality stocks near their 52-week low, in one call
   compare_to_sector           — stock's move vs its sector index and Nifty 50
@@ -17,24 +17,16 @@ Tools exposed to Claude (38 total):
   get_relative_valuation      — P/E and ROCE vs industry median, up to 20 stocks at once
   get_moat_signals            — revenue share / rank / HHI + ROCE, margin, promoter durability
   get_forward_outlook         — analyst estimates, order wins, capex filings, management guidance
-  screen_by_theme             — pre-built thematic screens
-  list_investment_themes      — list available theme screens
+  screen_by_theme             — pre-built thematic screens (criteria in the tool description)
   get_full_analysis           — ALL data for deep-dive reasoning
-  analyze_red_flags           — structured red flag checklist data
-  explain_for_beginners       — data + prompt for beginner-friendly explanation
-  compare_stocks_ui           — interactive comparison dashboard (Claude Desktop)
+  analyze_red_flags           — rule-based red-flag checks over the full history
   get_document_list           — list annual reports and earnings call transcripts
-  analyze_annual_report       — ask questions over annual report PDFs (RAG)
-  analyze_earnings_call       — ask questions over earnings call transcripts (RAG)
-  ask_company_research        — ask questions across ALL of a company's cached documents at once
+  ask_company_research        — semantic search over annual reports / earnings calls (all, one type, or one document)
   search_market_commentary    — semantic search for a question across multiple companies' indexed documents
-  get_company_announcements   — fetch recent NSE corporate announcements
-  search_shareholder          — find bulk deal activity by investor name
-  get_bulk_deals              — all bulk deals for one company (no investor name needed)
+  get_company_announcements   — NSE corporate announcements, incl. credit and ESG rating actions
+  get_bulk_deals              — NSE bulk deals by company, by investor name, or both
   get_insider_trading         — SEBI PIT promoter/KMP/designated-person trade disclosures
-  get_promoter_pledge_history — dedicated promoter pledge % trend with severity flag
-  get_credit_ratings          — CRISIL/ICRA/CARE rating actions, a debt-quality check
-  get_commodity_prices        — commodity price context and company impact analysis
+  get_commodity_prices        — international benchmark price + exposed Indian companies
   notebook_ai                 — save and summarize investment research notes
   add_portfolio_stock         — add/merge a holding into your local portfolio
   update_portfolio_stock      — correct quantity/avg price on an existing holding
@@ -44,7 +36,7 @@ Tools exposed to Claude (38 total):
 Resources:
   screener://analyst-guide    — how to use this assistant
   screener://query-syntax     — Screener query language reference
-  ui://screener/stock-comparison.html — interactive dashboard (MCP App) for compare_stocks_ui
+  ui://screener/stock-comparison.html — interactive dashboard (MCP App) for compare_companies
 
 Setup:
   Set environment variables:
@@ -52,7 +44,7 @@ Setup:
     SCREENER_PASSWORD=yourpassword
   Without credentials, public data only (some metrics may be hidden).
 
-  For document analysis (analyze_annual_report, analyze_earnings_call):
+  For document analysis (ask_company_research, search_market_commentary):
     pip install pdfplumber sentence-transformers chromadb
 
 Run:
@@ -76,12 +68,12 @@ from .tools.company_tools import (
     get_shareholding as _get_shareholding,
     get_peers as _get_peers,
     compare_companies as _compare,
-    get_promoter_pledge_history as _get_pledge_history,
+    dashboard_rows as _dashboard_rows,
 )
 from .tools.screening_tools import (
     screen_stocks as _screen,
     screen_by_theme as _theme,
-    list_themes as _list_themes,
+    theme_catalog as _theme_catalog,
 )
 from .tools.technical_tools import (
     get_52_week_low_candidates as _get_52w_low,
@@ -99,23 +91,14 @@ from .tools.market_tools import (
 from .tools.analysis_tools import (
     get_full_analysis as _full_analysis,
     get_red_flags as _red_flags,
-    beginner_explainer as _beginner,
 )
 from .tools.documents import (
     get_document_list as _get_document_list,
-    analyze_annual_report as _analyze_annual_report,
-    analyze_earnings_call as _analyze_earnings_call,
     ask_company_research as _ask_company_research,
     search_market_commentary as _search_market_commentary,
 )
-from .tools.announcements import (
-    get_company_announcements as _get_announcements,
-    get_credit_ratings as _get_credit_ratings,
-)
-from .tools.shareholders import (
-    search_shareholder as _search_shareholder,
-    get_bulk_deals as _get_bulk_deals,
-)
+from .tools.announcements import get_company_announcements as _get_announcements
+from .tools.shareholders import get_bulk_deals as _get_bulk_deals
 from .tools.insider_trading import get_insider_trading as _get_insider_trading
 from .tools.commodities import get_commodity_prices as _get_commodity_prices
 from .tools.notebook import notebook_ai as _notebook_ai
@@ -242,6 +225,7 @@ async def screen_stocks(
     min_market_cap: float = 100,
     exclude_flagged: bool = True,
     peer_relative: bool = False,
+    page: int = 1,
 ) -> dict:
     """
     Run a stock screen: Screener.in fundamental fields and/or technical
@@ -292,13 +276,16 @@ async def screen_stocks(
     sort_by: a technical metric (rsi14, pct_above_52w_low, volume_vs_20d_avg, ...)
              or a result column name. Default: the first technical filter.
 
+    page: 1-based page of results, `limit` per page (page=2 → results 26-50
+          with the default limit).
+
     Returns partial=true (with a reason) if only some candidates could be
     checked — e.g. more fundamental matches than max_candidates.
     """
     return await _safe(_screen)(
         query, sort_by=sort_by, order=order, limit=limit, universe=universe,
         max_candidates=max_candidates, min_market_cap=min_market_cap,
-        exclude_flagged=exclude_flagged, peer_relative=peer_relative,
+        exclude_flagged=exclude_flagged, peer_relative=peer_relative, page=page,
     )
 
 
@@ -472,43 +459,32 @@ async def get_analyst_targets(symbol: str) -> dict:
     return await _safe(_get_analyst_targets)(symbol)
 
 
-@mcp.tool(annotations={"title": "Screen By Theme", "readOnlyHint": True, "openWorldHint": True})
-async def screen_by_theme(theme: str, limit: int = 20) -> dict:
-    """
+async def screen_by_theme(theme: str, limit: int = 20, page: int = 1) -> dict:
+    return await _safe(_theme)(theme, limit=limit, page=page)
+
+
+screen_by_theme.__doc__ = f"""
     Run a pre-built thematic stock screen.
 
-    Available themes:
-      undervalued_small_cap   — Small caps with ROCE > 15%, low debt, PE < 20
-      high_roce_low_debt      — ROCE > 20%, debt to equity < 0.3
-      compounders             — 15%+ growth across revenue, profit, ROE, ROCE
-      turnaround              — Companies with strong recent profit recovery
-      rising_profit_falling_price — Profit up, price compressed (potential value)
-      improving_roce          — ROCE > 15% with profit momentum
-      hidden_gems             — Small cap, high ROCE, strong growth
-      dividend_aristocrats    — Consistent dividend payers with strong financials
-      qarp                    — Quality at reasonable price
-      micro_cap_growth        — High-growth micro caps < ₹1000 Cr
-      ev_theme                — EV & auto ancillary growth companies
-      chemicals               — Specialty chemicals with strong fundamentals
-      defense                 — Defense sector companies with revenue momentum
-      railways                — Railway infra/equipment companies
-      renewable_energy        — Renewable energy sector growth companies
+    Query themes run a Screener query across the whole market. Sector themes
+    (defense, ev_theme, chemicals, railways, renewable_energy) start from the
+    companies actually in the sector — NSE index constituents, Screener
+    industry pages or a curated list — then apply the filters; the response's
+    data.universe says exactly which.
+
+    Themes and criteria:
+{_theme_catalog()}
+
+    limit: results per page (default 20)
+    page: 1-based page of results
 
     Examples:
       screen_by_theme("hidden_gems")
-      screen_by_theme("compounders")
-      screen_by_theme("chemicals")
+      screen_by_theme("defense")
+      screen_by_theme("compounders", page=2)
     """
-    return await _safe(_theme)(theme, limit=limit)
-
-
-@mcp.tool(annotations={"title": "List Investment Themes", "readOnlyHint": True, "openWorldHint": False})
-async def list_investment_themes() -> dict:
-    """
-    List all available pre-built investment themes with their screening criteria.
-    Use this to discover what thematic screens are available.
-    """
-    return await _safe(_list_themes)()
+screen_by_theme = mcp.tool(annotations={"title": "Screen By Theme", "readOnlyHint": True, "openWorldHint": True})(
+    screen_by_theme)
 
 
 # ─── Company Deep Dive ─────────────────────────────────────────────────────────
@@ -538,16 +514,22 @@ async def get_financials(
     years: int = 5,
 ) -> dict:
     """
-    Get financial statements for a company.
+    Get financial statements for a company, as numbers (₹ Cr unless the
+    label says % or days).
 
     symbol: NSE/BSE symbol
     statement options:
-      "profit_loss"    — Revenue, expenses, EBITDA, PAT (default)
+      "profit_loss"    — Revenue, expenses, operating profit, PAT (default).
+                         The trailing-twelve-months column comes back as
+                         data.ttm, separate from the fiscal years.
       "balance_sheet"  — Assets, liabilities, equity, debt
       "cash_flow"      — Operating, investing, financing cash flows
-      "ratios"         — Historical PE, PB, ROCE, ROE, etc.
+      "ratios"         — Screener's ratios table (debtor/inventory/payable
+                         days, cash conversion cycle, working-capital days,
+                         ROCE) plus ROE %, debt-to-equity, and year-end P/E and
+                         P/B. data.row_sources says where each row comes from.
     financial_type: "consolidated" or "standalone"
-    years: number of years to show (default 5, max 10)
+    years: number of fiscal years (default 5, max 12) — TTM is never counted
     """
     valid = {"profit_loss", "balance_sheet", "cash_flow", "ratios"}
     if statement not in valid:
@@ -571,17 +553,23 @@ async def get_quarterly_results(symbol: str, financial_type: str = "consolidated
 @mcp.tool(annotations={"title": "Get Shareholding Pattern", "readOnlyHint": True, "openWorldHint": True})
 async def get_shareholding_pattern(symbol: str) -> dict:
     """
-    Get shareholding pattern history for a company (last 8 quarters).
+    Shareholding pattern for the last 8 quarters, with the analysis:
 
-    Shows: Promoter, FII, DII, Public holding percentages + pledged %
-    Also provides a trend analysis of promoter holding changes.
-
-    Useful for:
-      - Detecting promoter confidence (buying/selling)
-      - Monitoring FII/DII interest
-      - Flagging pledge concerns
+      - rows: Promoter / FII / DII / Government / Public %, shareholder count
+      - trends: per category — latest %, change over the window and over the
+        last quarter (pp), direction
+      - promoter_group: present or not. Companies like ITC have no promoter;
+        promoter-trend and pledge checks then don't apply, and the response
+        says so instead of implying "no pledge".
+      - pledge: % of promoter holding pledged, from Screener's analysis, with
+        severity (>50% high, 20-50% moderate, >0-20% low); not_flagged (none
+        flagged — small pledges may not be); or not_applicable (no promoter)
 
     symbol: NSE/BSE symbol
+
+    Examples:
+      get_shareholding_pattern("ZEEL")
+      get_shareholding_pattern("ITC")
     """
     return await _safe(_get_shareholding)(symbol)
 
@@ -599,23 +587,35 @@ async def get_peer_comparison(symbol: str, financial_type: str = "consolidated")
     return await _safe(_get_peers)(symbol, financial_type)
 
 
-@mcp.tool(annotations={"title": "Compare Companies", "readOnlyHint": True, "openWorldHint": True})
-async def compare_companies(symbols: list[str], financial_type: str = "consolidated") -> dict:
+@mcp.tool(
+    annotations={"title": "Compare Companies", "readOnlyHint": True, "openWorldHint": True},
+    # "ui/resourceUri" is the older flat key some hosts still read
+    meta={"ui": {"resourceUri": STOCK_COMPARISON_WIDGET_URI}, "ui/resourceUri": STOCK_COMPARISON_WIDGET_URI},
+)
+async def compare_companies(symbols: list[str] | str, financial_type: str = "consolidated") -> dict:
     """
-    Side-by-side comparison of 2 to 5 companies on all key ratios.
+    Side-by-side comparison of 2 to 6 companies: price, market cap, P/E,
+    book value, ROCE, ROE, debt-to-equity, dividend yield, 52-week range,
+    plus point-in-time red-flag checks per company.
 
-    Fetches data for each company and presents them in a comparative table.
-    Best for "ITC vs HUL vs Nestle" type questions.
+    Hosts that support MCP Apps (e.g. Claude Desktop) also render an
+    interactive dashboard with the best value in each row highlighted; every
+    host gets the same data as JSON in data.companies.
 
-    symbols: list of NSE/BSE symbols, e.g., ["ITC", "HINDUNILVR", "NESTLEIND"]
+    symbols: list (["ITC", "HINDUNILVR", "NESTLEIND"]) or comma-separated
+             string ("TCS,INFY,WIPRO"). Company names and near-miss symbols
+             are resolved like everywhere else.
     financial_type: "consolidated" or "standalone"
 
     Examples:
       compare_companies(["ITC", "HINDUNILVR"])
-      compare_companies(["TCS", "INFY", "WIPRO", "HCLTECH"])
-      compare_companies(["PIDILITIND", "ASIANPAINT", "BERGEPAINT"])
+      compare_companies("TCS,INFY,WIPRO,HCLTECH")
     """
-    return await _safe(_compare)(symbols, financial_type)
+    env = await _safe(_compare)(symbols, financial_type)
+    # The dashboard reads `stocks` / `count` at the top level of the result.
+    data = env.get("data") or {}
+    stocks = _dashboard_rows(data) if data else []
+    return {**env, "stocks": stocks, "count": len(data.get("companies", []))}
 
 
 # ─── Analysis Tools ────────────────────────────────────────────────────────────
@@ -623,18 +623,18 @@ async def compare_companies(symbols: list[str], financial_type: str = "consolida
 @mcp.tool(annotations={"title": "Get Full Analysis", "readOnlyHint": True, "openWorldHint": True})
 async def get_full_analysis(symbol: str, financial_type: str = "consolidated") -> dict:
     """
-    Fetch ALL financial data for a company in a single call.
+    Fetch ALL financial data for a company in a single call, as one report.
 
-    Returns complete data across:
-      - Key ratios and overview
-      - 10-year P&L, Balance Sheet, Cash Flow
+    Uses the same windows as the standalone tools, so numbers always agree:
+      - Key ratios, about, NSE/BSE codes
+      - 10 fiscal years of P&L (+ TTM), Balance Sheet, Cash Flow
+      - Ratios history incl. ROE, debt-to-equity, year-end P/E and P/B
       - 8 quarters of results
-      - Historical ratios (PE, ROCE, ROE, etc.)
-      - Shareholding pattern
-      - Peer comparison
+      - 8 quarters of shareholding
+      - Peer comparison table
 
-    Use this when you need to do a thorough analysis, identify trends,
-    explain a company in depth, or answer complex multi-part questions.
+    Use this for a thorough analysis, to explain a company (including to a
+    beginner), or to answer complex multi-part questions.
 
     symbol: NSE/BSE symbol
     """
@@ -644,185 +644,25 @@ async def get_full_analysis(symbol: str, financial_type: str = "consolidated") -
 @mcp.tool(annotations={"title": "Analyze Red Flags", "readOnlyHint": True, "openWorldHint": True})
 async def analyze_red_flags(symbol: str, financial_type: str = "consolidated") -> dict:
     """
-    Fetch all financial data for a company and generate a structured red flag analysis.
+    Rule-based red-flag checks over a company's full history — computed
+    here, each flag with its severity and the numbers behind it:
 
-    Systematically checks for:
-      - Declining promoter holding or high pledging
-      - Rising debt trends
-      - Falling ROCE/ROE
-      - Cash flow vs profit divergence (profit without cash = concern)
-      - Revenue growth without profit growth
-      - Rising receivables or inventory vs sales
+      - Promoter holding falling, promoter shares pledged
+      - Leverage (debt-to-equity) and borrowings outgrowing sales
+      - ROCE falling or below 10%
+      - Operating cash flow lagging net profit (and negative CFO)
+      - Sales growing much faster than profit
+      - Debtor / inventory days rising
+      - Profit leaning on other income (one-offs)
+      - Equity dilution
 
-    Returns data + analysis framework for Claude to identify and explain red flags.
+    Returns flags (sorted by severity), clean_checks, skipped_checks (e.g.
+    leverage for banks, promoter checks for a company with no promoter), the
+    thresholds used, and not_checked items that need the annual report.
 
     symbol: NSE/BSE symbol
     """
     return await _safe(_red_flags)(symbol, financial_type)
-
-
-@mcp.tool(annotations={"title": "Explain For Beginners", "readOnlyHint": True, "openWorldHint": True})
-async def explain_for_beginners(symbol: str) -> dict:
-    """
-    Explain a company in simple, beginner-friendly language.
-
-    Fetches all data and produces a plain-English explanation:
-      - What does this company do and how does it make money?
-      - Is it profitable and growing?
-      - What do the key numbers mean in everyday language?
-      - Is the stock expensive or cheap right now?
-      - What should a first-time investor watch out for?
-
-    Perfect for: "Explain Jyothy Labs like I'm a beginner"
-
-    symbol: NSE/BSE symbol
-    """
-    return await _safe(_beginner)(symbol)
-
-
-def _find_ratio(ratios: dict[str, str], *needles: str) -> str:
-    """Find a key_ratios value by fuzzy substring match (Screener's exact labels vary)."""
-    for needle in needles:
-        for key, value in ratios.items():
-            if needle.lower() in key.lower():
-                return value
-    return ""
-
-
-def _num(text: str) -> float | None:
-    """Parse a Screener-formatted number like '₹ 1,23,456 Cr.' or '23.4%' into a float."""
-    if not text:
-        return None
-    cleaned = re.sub(r"[^0-9.\-]", "", text)
-    try:
-        return float(cleaned) if cleaned not in ("", "-", ".") else None
-    except ValueError:
-        return None
-
-
-def _compute_red_flags(ratios: dict[str, str], financial: bool = False) -> list[dict[str, str]]:
-    """Deterministic, rule-based red flag checks computed from a single snapshot of ratios.
-
-    Not a substitute for the LLM-driven analyze_red_flags tool (which reasons over
-    full history) — this only checks point-in-time thresholds so the dashboard has
-    something real to render without an extra model round-trip.
-    """
-    flags: list[dict[str, str]] = []
-
-    debt_equity = None if financial else _num(_find_ratio(ratios, "Debt to equity"))
-    if debt_equity is not None:
-        if debt_equity > 1.5:
-            flags.append({"flag": f"High debt-to-equity ratio ({debt_equity:.2f})", "severity": "critical"})
-        elif debt_equity > 0.8:
-            flags.append({"flag": f"Elevated debt-to-equity ratio ({debt_equity:.2f})", "severity": "warning"})
-
-    roce = None if financial else _num(_find_ratio(ratios, "Return on capital employed", "ROCE"))
-    if roce is not None and roce < 10:
-        flags.append({"flag": f"Low return on capital employed ({roce:.1f}%)", "severity": "warning"})
-
-    roe = _num(_find_ratio(ratios, "Return on equity", "ROE"))
-    if roe is not None and roe < 10:
-        flags.append({"flag": f"Low return on equity ({roe:.1f}%)", "severity": "warning"})
-
-    pe = _num(_find_ratio(ratios, "Stock P/E", "P/E"))
-    if pe is not None and pe > 60:
-        flags.append({"flag": f"Very high valuation — P/E of {pe:.1f}", "severity": "info"})
-
-    return flags
-
-
-@mcp.tool(
-    annotations={"title": "Compare Stocks (Interactive UI)", "readOnlyHint": True, "openWorldHint": True},
-    # "ui/resourceUri" is the older flat key some hosts still read
-    meta={"ui": {"resourceUri": STOCK_COMPARISON_WIDGET_URI}, "ui/resourceUri": STOCK_COMPARISON_WIDGET_URI},
-)
-async def compare_stocks_ui(symbols: list[str] | str) -> dict:
-    """
-    Interactive stock comparison dashboard.
-
-    Compare multiple stocks side-by-side with real-time price, market cap,
-    P/E, ROE, ROCE, debt-to-equity, dividend yield and rule-based red flag
-    checks. Opens an interactive dashboard (MCP App) in hosts that support
-    it — best value in each row highlighted, one-click retry for ambiguous
-    symbols; other hosts get the same data as JSON.
-
-    Args:
-        symbols: Stock symbols, either as a list (["TCS", "INFY", "WIPRO"])
-            or a comma-separated string ("TCS,INFY,WIPRO")
-
-    Examples:
-      compare_stocks_ui(["TCS", "INFY", "WIPRO"])
-      compare_stocks_ui(["HDFCBANK", "ICICIBANK", "AXISBANK"])
-      compare_stocks_ui("HINDUNILVR,ITC,NESTLEIND")
-
-    Company names and near-miss symbols are resolved like everywhere else.
-    """
-    env = await _safe(_compare_stocks_ui_impl)(symbols)
-    # The dashboard UI predates the envelope and reads `stocks` / `count` at
-    # the top level — mirror them there so it keeps rendering.
-    data = env.get("data") or {}
-    return {**env, "stocks": data.get("stocks", []), "count": data.get("count", 0)}
-
-
-async def _compare_stocks_ui_impl(symbols: list[str] | str) -> ToolResult:
-    import asyncio
-    from .core.company_page import fetch_company_page
-    from .core.quality import is_financial, overview_missing_fields
-    from .parsers.company import debt_to_equity, parse_overview
-
-    if isinstance(symbols, str):
-        symbols = symbols.split(",")
-    stock_list = [s.strip() for s in symbols if s.strip()][:6]
-
-    async def fetch(sym: str):
-        page = await fetch_company_page(sym, "consolidated")
-        return page, parse_overview(page.html)
-
-    results = await asyncio.gather(*[fetch(s) for s in stock_list], return_exceptions=True)
-
-    stocks = []
-    warnings: list[str] = []
-    missing_all: list[str] = []
-    for sym, result in zip(stock_list, results):
-        if isinstance(result, Exception):
-            entry = {"symbol": sym.upper(), "error": str(result)}
-            if isinstance(result, ToolError) and result.details.get("candidates"):
-                entry["candidates"] = result.details["candidates"]
-            stocks.append(entry)
-            warnings.append(f"{sym.upper()}: {result}")
-            continue
-
-        page, overview = result
-        warnings += page.warnings
-        missing = overview_missing_fields(overview)
-        missing_all += [f"{page.symbol}.{m}" for m in missing]
-        ratios = overview.get("key_ratios", {})
-        financial = is_financial(overview.get("sectors", []))
-        stocks.append({
-            "symbol": page.symbol,
-            "name": overview.get("name"),
-            "financial_type": page.financial_type,
-            "price": overview.get("current_price") or None,
-            "market_cap": _find_ratio(ratios, "Market Cap") or None,
-            "pe_ratio": _find_ratio(ratios, "Stock P/E", "P/E") or None,
-            "roe": _find_ratio(ratios, "Return on equity", "ROE") or None,
-            "roce": _find_ratio(ratios, "Return on capital employed", "ROCE") or None,
-            "debt_to_equity": None if financial else debt_to_equity(page.html),
-            "dividend_yield": _find_ratio(ratios, "Dividend Yield") or None,
-            "book_value": _find_ratio(ratios, "Book Value") or None,
-            "missing_fields": missing,
-            "red_flags": _compute_red_flags(
-                {**ratios, "Debt to equity": str(debt_to_equity(page.html) or "")}, financial=financial),
-        })
-
-    failed = [s for s in stocks if "error" in s]
-    return ToolResult(
-        data={"stocks": stocks, "count": len(stocks) - len(failed)},
-        warnings=warnings,
-        missing_fields=missing_all,
-        partial=bool(failed or missing_all),
-        reason="Some symbols failed or had blank fields on the source page." if (failed or missing_all) else None,
-    )
 
 
 # ─── Document Analysis ────────────────────────────────────────────────────────
@@ -836,105 +676,52 @@ async def get_document_list(symbol: str) -> dict:
 
     symbol: NSE/BSE symbol (e.g., "TCS", "INFY")
 
-    Use this before calling analyze_annual_report or analyze_earnings_call
-    to see what documents are available and their years/quarters.
+    Use this to see which years/quarters ask_company_research can search.
+    Annual reports are de-duplicated per year (a PDF is preferred over a .zip).
     """
     return await _safe(_get_document_list)(symbol)
-
-
-@mcp.tool(annotations={"title": "Analyze Annual Report", "readOnlyHint": True, "openWorldHint": True})
-async def analyze_annual_report(
-    symbol: str,
-    year: int,
-    question: str = "",
-    pdf_url: str = "",
-    force_reindex: bool = False,
-) -> dict:
-    """
-    Ask any question about a company's annual report using AI-powered semantic search.
-
-    Downloads the PDF, indexes it into a local vector database (ChromaDB),
-    and retrieves the most relevant sections to answer your question.
-    Results are cached — subsequent calls on the same report are instant.
-    The response's data.document.freshness shows last_indexed_at, the
-    source PDF's sha256/ETag, and source_changed (a HEAD check against the
-    live PDF; null if it can't tell) so you can judge staleness.
-
-    symbol: NSE/BSE symbol (e.g., "TCS")
-    year: report year (e.g., 2024, 2023)
-    question: what you want to know (leave blank for a general summary)
-    pdf_url: optional — provide directly if you have the link
-    force_reindex: re-download the PDF and rebuild the index (use when
-                   source_changed is true or the index is old)
-
-    Requires: pip install pdfplumber sentence-transformers chromadb
-
-    Examples:
-      analyze_annual_report("TCS", 2024, "What are the key risks mentioned?")
-      analyze_annual_report("INFY", 2023, "What did management say about margins?")
-      analyze_annual_report("RELIANCE", 2024, "Summarize the new energy segment")
-    """
-    return await _safe(_analyze_annual_report)(symbol, year, question, pdf_url or None, force_reindex)
-
-
-@mcp.tool(annotations={"title": "Analyze Earnings Call", "readOnlyHint": True, "openWorldHint": True})
-async def analyze_earnings_call(
-    symbol: str,
-    quarter: str,
-    question: str = "",
-    pdf_url: str = "",
-    force_reindex: bool = False,
-) -> dict:
-    """
-    Ask any question about an earnings call transcript using semantic search.
-
-    Same RAG pipeline as analyze_annual_report — downloads, indexes, and retrieves
-    relevant sections from the transcript PDF.
-
-    symbol: NSE/BSE symbol
-    quarter: e.g., "Q1FY25", "Q2FY26", "Q3FY25"
-    question: what you want to know (leave blank for a management commentary summary)
-    pdf_url: optional — provide directly if you have the link
-    force_reindex: re-download and rebuild the cached index (see
-                   data.document.freshness for last_indexed_at / source_changed)
-
-    Requires: pip install pdfplumber sentence-transformers chromadb
-
-    Examples:
-      analyze_earnings_call("HDFCBANK", "Q3FY25", "What is the guidance on NIM?")
-      analyze_earnings_call("TCS", "Q2FY25", "What did they say about deal wins?")
-    """
-    return await _safe(_analyze_earnings_call)(symbol, quarter, question, pdf_url or None, force_reindex)
 
 
 @mcp.tool(annotations={"title": "Ask Company Research", "readOnlyHint": True, "openWorldHint": True})
 async def ask_company_research(
     symbol: str,
-    question: str,
+    question: str = "",
+    doc_type: str = "all",
+    year: int = 0,
+    quarter: str = "",
+    pdf_url: str = "",
     max_annual_reports: int = 3,
     max_earnings_calls: int = 4,
+    force_reindex: bool = False,
 ) -> dict:
     """
-    Ask a question across ALL of a company's cached documents at once —
-    multiple annual reports AND earnings call transcripts together — instead
-    of picking one document at a time like analyze_annual_report/analyze_earnings_call.
+    Ask a question over a company's annual reports and earnings-call
+    transcripts using semantic search — across all recent documents at once,
+    one document type, or a single document.
 
-    Best for cross-year or cross-quarter questions that a single document can't
-    answer, e.g. "how has capex strategy evolved over the last 3 years?" or
-    "has management's tone on margins changed across recent quarters?"
+      ask_company_research("TCS", "How has capex strategy evolved?")      # 3 ARs + 4 calls
+      ask_company_research("ITC", "Key regulatory risks", doc_type="annual_report")
+      ask_company_research("TCS", "Key risks", year=2024)                 # one annual report
+      ask_company_research("HDFCBANK", "NIM guidance", quarter="Q3FY25")  # one earnings call
 
-    Indexes (or reuses cached indexes for) the most recent `max_annual_reports`
-    annual reports and `max_earnings_calls` earnings calls, then runs one
-    semantic search across all of them, ranked by relevance.
+    Downloads and indexes the PDFs locally on first use (cached after that),
+    then returns the most relevant excerpts (each capped to ~900 characters,
+    with document and page) — BRSR/sustainability boilerplate is ranked down
+    unless the question is about ESG.
 
-    Requires: pip install pdfplumber sentence-transformers chromadb
+    doc_type: "all" | "annual_report" | "earnings_call"
+    year: one annual report (e.g. 2024) — implies doc_type="annual_report"
+    quarter: one earnings call (e.g. "Q1FY26") — implies doc_type="earnings_call"
+    pdf_url: search this PDF directly (label it with year or quarter)
+    max_annual_reports / max_earnings_calls: how many recent documents to
+        include when no year/quarter is given
+    force_reindex: re-download and rebuild the index (see each document's
+        freshness.source_changed)
 
-    Examples:
-      ask_company_research("TCS", "How has capex strategy evolved over the last 3 years?")
-      ask_company_research("HDFCBANK", "Has management's tone on NIM changed across recent quarters?", max_annual_reports=2)
+    Requires the [ai] extra: pip install 'screener-mcp[ai]'
     """
     return await _safe(_ask_company_research)(
-        symbol, question, max_annual_reports, max_earnings_calls
+        symbol, question, doc_type, year, quarter, pdf_url, max_annual_reports, max_earnings_calls, force_reindex,
     )
 
 
@@ -949,9 +736,8 @@ async def search_market_commentary(
     documents at once — e.g. "which of these companies mentioned raw material
     cost pressure in their recent earnings calls?"
 
-    Only searches documents already indexed via analyze_annual_report,
-    analyze_earnings_call, or ask_company_research for each symbol — it does
-    NOT download new documents, so cost/latency stays bounded no matter how
+    Only searches documents already indexed via ask_company_research for
+    each symbol — it does NOT download new documents, so cost/latency stays bounded no matter how
     many symbols are passed. Run ask_company_research(symbol, ...) first for
     any symbol you want included that hasn't been indexed yet.
 
@@ -970,122 +756,74 @@ async def search_market_commentary(
 async def get_company_announcements(
     symbol: str,
     category: str = "all",
-    days: int = 30,
+    days: int = 0,
 ) -> dict:
     """
-    Fetch recent company announcements from NSE.
+    Fetch recent company announcements (exchange filings) from NSE.
 
     symbol: NSE trading symbol (e.g., "TCS", "RELIANCE")
     category: filter by type — "all" | "results" | "board_meeting" | "dividend"
               | "insider_trading" | "agm" | "acquisition" | "buyback" | "fund_raise"
-    days: how many days to look back (default 30, max 365)
+              | "credit_rating" (CRISIL/ICRA/CARE/India Ratings actions — a
+                debt-quality check) | "esg_rating" (ESG scores, which NSE files
+                under "Credit Rating" too)
+    days: how many days to look back (default 30; 730 for the rating
+          categories, since rating actions come once or twice a year; max 3650)
+
+    An NSE failure is returned as an error (upstream_unavailable), never as
+    an empty list — an empty list means NSE really has no such filings.
 
     Examples:
       get_company_announcements("INFY", "results", 90)
+      get_company_announcements("RELIANCE", "credit_rating")
       get_company_announcements("HDFCBANK", "dividend")
-      get_company_announcements("RELIANCE", "all", 7)
     """
     return await _safe(_get_announcements)(symbol, category, days)
 
 
-@mcp.tool(annotations={"title": "Search Shareholder", "readOnlyHint": True, "openWorldHint": True})
-async def search_shareholder(
-    name: str,
-    symbol: str = "",
-    days: int = 365,
-) -> dict:
-    """
-    Search NSE bulk/block deals to find activity by a specific investor or entity.
-
-    Useful for tracking: FIIs, mutual funds, promoters, known investors.
-
-    name: partial or full name (e.g., "Jhunjhunwala", "SBI Mutual Fund", "HDFC AMC")
-    symbol: optional — restrict search to one company's deals
-    days: how many days of history to search (default 365)
-
-    Note: Only captures NSE bulk deals (single trade > 0.5% of equity).
-    For aggregate FII/DII/Promoter holdings, use get_shareholding_pattern().
-
-    Examples:
-      search_shareholder("Jhunjhunwala")
-      search_shareholder("SBI Mutual Fund", symbol="TCS")
-      search_shareholder("Nalanda Capital", days=730)
-    """
-    return await _safe(_search_shareholder)(name, symbol or None, days)
-
-
 @mcp.tool(annotations={"title": "Get Bulk Deals", "readOnlyHint": True, "openWorldHint": True})
-async def get_bulk_deals(symbol: str, days: int = 90) -> dict:
+async def get_bulk_deals(symbol: str = "", name: str = "", days: int = 30) -> dict:
     """
-    Fetch all NSE bulk deals for one company — no investor name required.
+    NSE bulk deals (single trades > 0.5% of a company's equity) — for one
+    company, for one investor across the market, or both.
 
-    Unlike search_shareholder (which needs a name to filter by), this returns
-    every bulk deal (>0.5% of equity in a single trade) recorded for the symbol,
-    useful for "who's been trading large blocks of X" style questions.
+    symbol: restrict to one company ("YESBANK")
+    name: partial investor/entity name ("Jhunjhunwala", "SBI Mutual Fund",
+          "Nalanda") — matched against the deal's client name
+    days: look-back (default 30, max 365; NSE serves one day per request, so
+          only the most recent 90 days are searched)
 
-    symbol: NSE trading symbol (e.g., "RELIANCE")
-    days: how many days of history to search (default 90, max 365)
+    Pass at least one of symbol / name. Bulk deals miss gradual accumulation —
+    for aggregate FII/DII/promoter holdings use get_shareholding_pattern, for
+    promoter/KMP trades of any size use get_insider_trading.
 
     Examples:
-      get_bulk_deals("YESBANK")
-      get_bulk_deals("ADANIENT", days=180)
+      get_bulk_deals("ADANIENT", days=60)
+      get_bulk_deals(name="Mutual Fund")
+      get_bulk_deals("TCS", name="SBI Mutual Fund")
     """
-    return await _safe(_get_bulk_deals)(symbol, days)
+    return await _safe(_get_bulk_deals)(symbol, name, days)
 
 
 @mcp.tool(annotations={"title": "Get Insider Trading", "readOnlyHint": True, "openWorldHint": True})
-async def get_insider_trading(symbol: str) -> dict:
+async def get_insider_trading(symbol: str, days: int = 365) -> dict:
     """
     Recent insider trading disclosures (SEBI PIT Regulation 7(2)) for a company.
 
     Shows promoter/KMP/designated-person trades — buy or sell, quantity,
     value, and holding before/after — with no minimum trade size. This is
-    different from `get_bulk_deals`/`search_shareholder`, which only catch
-    single trades over 0.5% of equity and so miss most insider activity.
+    different from `get_bulk_deals`, which only catches single trades over
+    0.5% of equity and so misses most insider activity. Merges NSE's two PIT
+    feeds (each lists filings the other doesn't).
 
     symbol: NSE trading symbol (e.g., "RELIANCE", "INFY")
+    days: look-back window (default 365)
 
     Examples:
       get_insider_trading("RELIANCE")
       get_insider_trading("ADANIENT")
     """
-    return await _safe(_get_insider_trading)(symbol)
-
-
-@mcp.tool(annotations={"title": "Get Promoter Pledge History", "readOnlyHint": True, "openWorldHint": True})
-async def get_promoter_pledge_history(symbol: str) -> dict:
-    """
-    Dedicated promoter pledge % trend for a company, with severity assessment.
-
-    Pulls the pledge row out of the shareholding table (if one exists) and
-    flags severity: >50% pledged = high risk, 20-50% = moderate, <20% = low,
-    none = clean.
-
-    symbol: NSE/BSE symbol
-
-    Examples:
-      get_promoter_pledge_history("ZEEL")
-      get_promoter_pledge_history("RELIANCE")
-    """
-    return await _safe(_get_pledge_history)(symbol)
-
-
-@mcp.tool(annotations={"title": "Get Credit Ratings", "readOnlyHint": True, "openWorldHint": True})
-async def get_credit_ratings(symbol: str, days: int = 730) -> dict:
-    """
-    Credit rating actions (CRISIL/ICRA/CARE/India Ratings) for a company —
-    a governance/debt-quality check for long-term holders, alongside
-    `get_promoter_pledge_history`.
-
-    symbol: NSE trading symbol (e.g., "TCS", "RELIANCE")
-    days: look back this many days (default 730 — rating actions are
-          infrequent, often just 1-2 per year)
-
-    Examples:
-      get_credit_ratings("RELIANCE")
-      get_credit_ratings("ADANIENT", days=365)
-    """
-    return await _safe(_get_credit_ratings)(symbol, days)
+    return await _safe(_get_insider_trading)(symbol, days)
 
 
 # ─── Commodity Analysis ────────────────────────────────────────────────────────
@@ -1093,17 +831,19 @@ async def get_credit_ratings(symbol: str, days: int = 730) -> dict:
 @mcp.tool(annotations={"title": "Get Commodity Prices", "readOnlyHint": True, "openWorldHint": True})
 async def get_commodity_prices(commodity: str, years: int = 5) -> dict:
     """
-    Get commodity price context and its impact on Indian listed companies.
+    Commodity price context and its impact on Indian listed companies.
 
-    Returns the international benchmark price the MCX contract tracks
-    (COMEX gold/silver/copper, Brent, Henry Hub, etc.), with 4-week, 52-week
-    and `years`-period moves and range, USD/INR, and an approximate INR price
-    (a pure FX conversion — excludes import duty/GST, so below MCX). Also covers
-    which companies benefit or suffer from price moves, and Screener queries to
-    find exposed companies.
+    Returns the international benchmark price the MCX/NCDEX contract tracks
+    (COMEX gold/silver/copper, Brent, Henry Hub, CBOT wheat, etc.), with
+    4-week, 52-week and `years`-period moves and range, USD/INR, and an
+    approximate INR price (a pure FX conversion — excludes import duty/GST, so
+    below MCX). Also lists which companies benefit or suffer from price moves
+    and their symbols (data.watch_symbols) to pass to compare_companies.
 
     commodity: gold | silver | crude_oil | copper | aluminium | zinc | nickel
-               | cotton | natural_gas | steel   (nickel: no free feed → partial)
+               | cotton | natural_gas | steel | wheat | tobacco | wood_pulp
+               (nickel, tobacco, wood_pulp: no free price feed → partial,
+               exposure analysis only)
     years: history period for the moves and range (1–10, default 5)
 
     Examples:
@@ -1265,7 +1005,7 @@ I'm your Indian stock research copilot powered by Screener.in data.
 - Industry pages: medians, revenue share and concentration for every industry
 
 ### Beyond Screener.in:
-- NSE filings: announcements, order wins, capex, bulk deals, insider trades
+- NSE filings: announcements, credit/ESG ratings, order wins, capex, bulk deals, insider trades
 - Yahoo Finance: analyst consensus targets, EPS/revenue estimates
 - Google News: recent headlines and broker target mentions
 
@@ -1381,7 +1121,7 @@ _stock_comparison_html = _inline_ext_apps((_UI_DIR / "stock_comparison.html").re
 @mcp.resource(
     STOCK_COMPARISON_WIDGET_URI,
     name="Stock Comparison Dashboard",
-    description="Interactive dashboard rendered for compare_stocks_ui results.",
+    description="Interactive dashboard rendered for compare_companies results.",
     mime_type=MCP_APP_MIME_TYPE,
 )
 def stock_comparison_ui() -> str:

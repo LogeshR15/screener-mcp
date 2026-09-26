@@ -290,15 +290,17 @@ async def fetch_candidates(
     max_rows: int = DEFAULT_MAX_CANDIDATES,
     sort: str = "",
     order: str = "",
+    page_path: Optional[str] = None,
 ) -> tuple[list[dict], Optional[int]]:
-    """Rows from a Screener screen (``query``) or an index constituents page.
+    """Rows from a Screener screen (``query``), an index constituents page
+    (``index_slug``) or an industry page (``page_path``, e.g. "/market/IN07/…/").
 
     Returns (candidates, total rows available at the source). Screen queries
     need a Screener login (raises PermissionError otherwise); index pages are
     public. Pages come 25 rows at a time; after the first page the rest are
     fetched concurrently (the client caps concurrency and retries 429s).
     """
-    key = (query, index_slug, max_rows, sort, order)
+    key = (query, index_slug, page_path, max_rows, sort, order)
     hit = _candidate_cache.get(key)
     if hit and time.monotonic() - hit[0] < _CANDIDATE_TTL:
         return hit[1]
@@ -311,7 +313,8 @@ async def fetch_candidates(
                 params.update({"sort": sort, "order": order or "desc"})
             html = await client.get_html("/screen/raw/", params=params)
         else:
-            html = await client.get_html(f"/company/{index_slug}/", params={"page": str(n)} if n > 1 else None)
+            path = page_path or f"/company/{index_slug}/"
+            html = await client.get_html(path, params={"page": str(n)} if n > 1 else None)
         return parse_screen_results(html)
 
     first = await page(1)

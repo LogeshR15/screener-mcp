@@ -28,6 +28,34 @@ def _clean(text: str) -> str:
     return re.sub(r"\s+", " ", text or "").strip()
 
 
+def _clean_label(text: str) -> str:
+    """Row label without the " +" expand-button suffix Screener renders on
+    rows that open a breakdown ("Sales +", "Borrowings +", "FIIs +")."""
+    return re.sub(r"\s*\+$", "", _clean(text))
+
+
+# Rows that are links or controls rather than data (the quarterly table's
+# "Raw PDF" row links each quarter's filing and has no values).
+_NON_DATA_ROWS = {"raw pdf"}
+
+TTM_LABEL = "TTM"
+
+
+def split_ttm(table: dict[str, Any]) -> tuple[list[str], list[dict], dict[str, str] | None]:
+    """(fiscal years, rows with fiscal-year values only, {label: TTM value} or None).
+
+    Screener appends a trailing-twelve-months column to the P&L. It isn't a
+    fiscal year, so a "last 3 years" request must not count it as one.
+    """
+    years = list(table.get("years", []))
+    rows = table.get("rows", [])
+    if not years or years[-1].upper() != TTM_LABEL:
+        return years, rows, None
+    n = len(years) - 1
+    ttm = {r["label"]: (r["values"][n] if len(r["values"]) > n else "") for r in rows}
+    return years[:n], [{**r, "values": r["values"][:n]} for r in rows], ttm
+
+
 def _parse_number(text: str) -> str:
     """Keep numeric strings as-is (Screener uses ₹ crore notation already)."""
     return _clean(text)
@@ -85,8 +113,10 @@ def _yearly_table(soup: BeautifulSoup, section_id: str) -> dict[str, Any]:
         cells = [_clean(td.get_text()) for td in tr.find_all("td")]
         if not cells:
             continue
-        label = cells[0]
+        label = _clean_label(cells[0])
         values = cells[1:]
+        if label.lower() in _NON_DATA_ROWS or not any(values):
+            continue
         rows.append({"label": label, "values": values})
 
     return {"years": years, "rows": rows}
@@ -202,7 +232,7 @@ def debt_to_equity(html: str) -> float | None:
     """
     latest: dict[str, str] = {}
     for row in parse_balance_sheet(html).get("rows", []):
-        label = re.sub(r"[\s+]+$", "", row.get("label", "")).lower()
+        label = _clean_label(row.get("label", "")).lower()
         if label in ("equity capital", "reserves", "borrowings") and row.get("values"):
             latest[label] = row["values"][-1]
 
@@ -253,9 +283,40 @@ def parse_shareholding(html: str) -> dict[str, Any]:
     for tr in table.select("tbody tr"):
         cells = [_clean(td.get_text()) for td in tr.find_all("td")]
         if cells:
-            rows.append({"category": cells[0], "values": cells[1:]})
+            rows.append({"category": _clean_label(cells[0]), "values": cells[1:]})
 
     return {"quarters": quarters, "rows": rows}
+
+
+def parse_pros_cons(html: str) -> dict[str, list[str]]:
+    """Screener's machine-generated pros / cons list (#analysis)."""
+    soup = BeautifulSoup(html, "lxml")
+    box = soup.find(id="analysis")
+    out = {"pros": [], "cons": []}
+    if box:
+        for key in out:
+            section = box.find(class_=key)
+            if section:
+                out[key] = [_clean(li.get_text()) for li in section.find_all("li") if _clean(li.get_text())]
+    return out
+
+
+_PLEDGE_RE = re.compile(r"promoters? ha(?:ve|s) pledged ([\d.]+)\s*% of their holding", re.I)
+
+
+def pledged_pct(html: str) -> float | None:
+    """% of promoter holding pledged, from Screener's cons list.
+
+    The shareholding table never carries a pledge row — even for a company
+    with 89% of promoter shares pledged — so the cons list ("Promoters have
+    pledged 89.4% of their holding.") is where the page states it. None when
+    the page doesn't flag a pledge.
+    """
+    for con in parse_pros_cons(html)["cons"]:
+        m = _PLEDGE_RE.search(con)
+        if m:
+            return float(m.group(1))
+    return None
 
 
 def parse_warehouse_id(html: str) -> str | None:

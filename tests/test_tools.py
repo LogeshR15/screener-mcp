@@ -14,7 +14,7 @@ import pytest
 
 from screener_mcp import server as server_module
 from screener_mcp.server import mcp
-from screener_mcp.tools.screening_tools import QUERY_TEMPLATES, THEME_DESCRIPTIONS
+from screener_mcp.tools.screening_tools import THEMES, parse_filters
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 README = REPO_ROOT / "README.md"
@@ -30,10 +30,8 @@ EXPECTED_TOOLS = {
     "get_shareholding_pattern",
     "get_peer_comparison",
     "compare_companies",
-    "compare_stocks_ui",
     "get_full_analysis",
     "analyze_red_flags",
-    "explain_for_beginners",
     # Stock screening
     "screen_stocks",
     "get_52_week_low_candidates",
@@ -44,20 +42,14 @@ EXPECTED_TOOLS = {
     "get_moat_signals",
     "get_forward_outlook",
     "screen_by_theme",
-    "list_investment_themes",
     # Document analysis (RAG)
     "get_document_list",
-    "analyze_annual_report",
-    "analyze_earnings_call",
     "ask_company_research",
     "search_market_commentary",
     # Corporate events
     "get_company_announcements",
-    "search_shareholder",
     "get_bulk_deals",
     "get_insider_trading",
-    "get_promoter_pledge_history",
-    "get_credit_ratings",
     # Market & research
     "get_commodity_prices",
     "notebook_ai",
@@ -108,17 +100,27 @@ async def test_every_tool_is_listed_in_module_docstring(tool_names):
     assert not missing, f"tools missing from server.py docstring: {missing}"
 
 
-def test_theme_templates_and_descriptions_agree():
-    """Every screening theme needs both a query template and a description."""
-    assert set(QUERY_TEMPLATES) == set(THEME_DESCRIPTIONS), (
-        f"template-only: {sorted(set(QUERY_TEMPLATES) - set(THEME_DESCRIPTIONS))}, "
-        f"description-only: {sorted(set(THEME_DESCRIPTIONS) - set(QUERY_TEMPLATES))}"
-    )
+def test_every_theme_is_well_formed():
+    """Each theme has a description and exactly one of: a Screener query, or a
+    sector universe plus filters that parse."""
+    for key, t in THEMES.items():
+        assert t.get("description"), key
+        assert ("query" in t) != ("universe" in t), f"{key}: needs exactly one of query / universe"
+        if "universe" in t:
+            assert t["universe"] and parse_filters(t["filters"]), key
+
+
+async def test_every_theme_and_its_criteria_are_in_the_tool_description():
+    """list_investment_themes was folded into screen_by_theme — its description
+    must carry every theme's criteria."""
+    desc = next(t.description for t in await mcp.list_tools() if t.name == "screen_by_theme")
+    for key, t in THEMES.items():
+        assert key in desc and (t.get("query") or t["filters"]) in desc, key
 
 
 def test_every_theme_is_documented_in_readme():
     readme = README.read_text()
-    undocumented = [theme for theme in QUERY_TEMPLATES if theme not in readme]
+    undocumented = [theme for theme in THEMES if theme not in readme]
     assert not undocumented, f"themes missing from README: {undocumented}"
 
 

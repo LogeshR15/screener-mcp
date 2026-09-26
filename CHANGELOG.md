@@ -1,5 +1,104 @@
 # Changelog
 
+## 0.5.0 — 2026-09-26
+
+Fixes from a full real-user test pass, and a consolidation of the tool
+surface from 38 tools to 30 with no loss of capability. **Breaking:** eight
+tools were removed or merged — see the migration table below.
+
+### Migration
+
+| Removed tool | Use instead |
+|---|---|
+| `compare_stocks_ui` | `compare_companies` — now renders the dashboard in MCP Apps hosts and returns the same JSON everywhere; takes 2–6 symbols as a list or comma-separated string |
+| `explain_for_beginners` | `get_company_overview` or `get_full_analysis` — ask Claude to explain for a beginner |
+| `search_shareholder` | `get_bulk_deals(name=...)` — `symbol` and `name` are both optional filters |
+| `get_credit_ratings` | `get_company_announcements(symbol, category="credit_rating")` (defaults to a 730-day window) |
+| `get_promoter_pledge_history` | `get_shareholding_pattern` → `data.pledge` |
+| `analyze_annual_report` | `ask_company_research(symbol, question, year=2024)` |
+| `analyze_earnings_call` | `ask_company_research(symbol, question, quarter="Q3FY25")` |
+| `list_investment_themes` | every theme's criteria are in `screen_by_theme`'s description |
+
+### Fixed
+- **Pledges were never detected.** Screener's shareholding table has no
+  pledge row even when 89% of promoter shares are pledged, so every company
+  read as "no pledge". Pledges now come from Screener's analysis ("Promoters
+  have pledged 89.4% of their holding"), and a company with no promoter
+  group (ITC) gets `not_applicable` instead of an implied "clean".
+- **Sector themes didn't match their names.** `defense`, `ev_theme`,
+  `chemicals`, `railways` and `renewable_energy` were generic growth screens
+  (`defense` returned SPARC and Ksolves). They now start from the companies
+  actually in the sector — Nifty India Defence / Nifty EV & New Age
+  Automotive / Nifty Chemicals constituents, Screener industry pages
+  (Aerospace & Defense, Shipbuilding, Specialty Chemicals, Railway Wagons),
+  or a curated list where neither exists — and apply filters to them.
+  `data.universe` says which.
+- `rising_profit_falling_price` now requires the price to have fallen
+  (`Return over 1year < 0`); `improving_roce` requires ROCE above last
+  year's and its 5-year average; `dividend_aristocrats` requires a dividend
+  in each of the last two years and a 3-year payout above 20%.
+- **Ratios history** promised P/E, P/B and ROE but only had working-capital
+  days and ROCE. It now adds ROE % and debt-to-equity (computed from the
+  statements) and year-end P/E and P/B (Screener's chart API), with
+  `row_sources` naming the source of every row.
+- **`years` counted TTM as a year** (`years=3` gave two years plus TTM). TTM
+  is now returned separately as `data.ttm`.
+- Row labels no longer carry Screener's `+` expand suffix ("Sales +"), and
+  the quarterly table's empty "Raw PDF" row is gone.
+- **`get_full_analysis` disagreed with the standalone tools**: its peer
+  section said "loads via AJAX" and was empty, and it showed 6 quarters of
+  shareholding instead of 8 and 9 years of P&L. It is now built from the
+  same helpers (10 fiscal years + TTM, 8 quarters, real peer table).
+- **`analyze_red_flags` computed nothing** — it was `get_full_analysis` plus
+  a prompt. It now runs rule-based checks over the full history (promoter
+  holding, pledge, leverage, borrowings vs sales, ROCE trend and level,
+  cash conversion, negative CFO, growth quality, debtor/inventory days,
+  other-income dependence, dilution), each with severity, evidence and the
+  threshold used; checks that don't apply (leverage for banks, promoter
+  checks for ITC) are listed as skipped, not passed.
+- **ESG scores were listed as credit ratings** (NSE files both under
+  "Credit Rating"). They're now a separate `esg_rating` category.
+- **Insider trading missed disclosures**: only NSE's newer PIT feed was
+  read. Both PIT feeds are now merged and de-duplicated.
+- **News for companies named after a common word** was mostly noise — the
+  RELIANCE query matched "self-reliance" and "AI reliance", and "ITC"
+  matched GST input-tax-credit stories. The NSE code is no longer searched
+  when it's just a word of the name, acronym names are anchored ("ITC Ltd",
+  "ITC shares"), and headlines that don't name the company are dropped
+  (`dropped_off_topic` reports how many).
+- **Document analysis**: two-column pages were read straight across and
+  interleaved; they're now split at the gutter. Mirrored/rotated decorative
+  text ("GNIYFITROF") is dropped. BRSR boilerplate is ranked down unless
+  the question is about ESG, hits are spread across the document, and each
+  excerpt is capped at ~900 characters around the question's terms.
+  Indexes built by 0.4 are rebuilt automatically on next use.
+- `get_document_list` listed years twice (a .zip and a .pdf); it now keeps
+  one per year, preferring the PDF.
+- `get_commodity_prices` suggested unrelated screens (a chemicals screen for
+  cotton). It now returns the exposed companies' symbols
+  (`data.watch_symbols`), adds wheat (CBOT) and exposure-only entries for
+  leaf tobacco and wood pulp, and no longer claims MCX contracts that don't
+  exist.
+- Screens flag dividend yields above 25% (special dividends or stale
+  prices) as implausible.
+
+### Added
+- `page` on `screen_stocks` and `screen_by_theme` to go past the first page.
+- `get_bulk_deals` searches up to 90 days (was 30).
+- `get_company_overview` includes Screener's pros/cons (`screener_analysis`).
+- `get_shareholding_pattern` returns per-category trends (window and
+  last-quarter change) and promoter-group detection.
+- `get_insider_trading(days=...)`.
+
+### Not reproduced
+- The tester's NSE failures (announcements, bulk deals, shareholder search,
+  credit ratings all empty), the blank company description / NSE-BSE codes,
+  and blank `debt_to_equity` were already fixed on `main` before this pass
+  (the test ran against an older build). The live canary now covers them.
+- The 4-minute hang on the first `add_portfolio_stock` call: that path does
+  no network I/O in current code; the stall matches the old 240-second tool
+  timeout on the older build.
+
 ## 0.4.0 — 2026-09-26
 
 ### Added

@@ -520,11 +520,12 @@ def test_level_filter_sorts_by_distance_from_dma():
     assert tt._default_sort(technical) == ("pct_vs_dma200", True)
 
 
-async def test_compare_stocks_ui_keeps_top_level_stocks_for_dashboard(fake_pages):
+async def test_compare_companies_keeps_top_level_stocks_for_dashboard(fake_pages):
     fake_pages[("MSUMI", "consolidated")] = FULL_PAGE
-    env = await server.compare_stocks_ui(["MSUMI"])
-    assert env["status"] == "ok" and env["count"] == 1
-    assert env["stocks"] == env["data"]["stocks"]
+    fake_pages[("MSUMI2", "consolidated")] = FULL_PAGE
+    env = await server.compare_companies(["MSUMI", "MSUMI2"])
+    assert env["status"] == "ok" and env["count"] == 2
+    assert [s["symbol"] for s in env["stocks"]] == [c["symbol"] for c in env["data"]["companies"]]
 
 
 # ─── price-history cache ──────────────────────────────────────────────────────
@@ -629,7 +630,7 @@ def test_debt_to_equity_from_balance_sheet():
 
 async def test_dashboard_widget_is_an_mcp_app_resource():
     tools = {t.name: t for t in await server.mcp.list_tools()}
-    uri = tools["compare_stocks_ui"].meta["ui"]["resourceUri"]
+    uri = tools["compare_companies"].meta["ui"]["resourceUri"]
     resources = {str(r.uri): r for r in await server.mcp.list_resources()}
     assert resources[uri].mimeType == "text/html;profile=mcp-app"
     html = list(await server.mcp.read_resource(uri))[0].content

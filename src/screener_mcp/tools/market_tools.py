@@ -40,12 +40,51 @@ def _short_name(name: str) -> str:
     return _SUFFIX_RE.sub("", name or "").strip()
 
 
+def _code_adds_signal(name: str, nse_code: Optional[str]) -> bool:
+    """Search the NSE code only when it's a distinct token. A code that is
+    just a word of the name ("RELIANCE" for Reliance Industries, "TITAN")
+    matches every use of that word — "self-reliance", "AI reliance" — and adds
+    nothing the full name doesn't already find."""
+    if not nse_code or len(nse_code) < 4 or not nse_code.isalpha():
+        return False
+    words = re.findall(r"[a-z]+", _short_name(name).lower())
+    return nse_code.lower() not in words
+
+
+def _is_acronym(short: str) -> bool:
+    """"ITC", "MRF", "BEML" — short names that are also ordinary abbreviations
+    ("ITC" is GST's input tax credit), so a bare-name search is mostly noise."""
+    return " " not in short and (len(short) <= 4 or short.isupper())
+
+
 def _news_query(name: str, nse_code: Optional[str], extra: str = "") -> str:
-    parts = [f'"{_short_name(name)}"']
-    if nse_code and len(nse_code) >= 4 and nse_code.isalpha():
+    short = _short_name(name)
+    if _is_acronym(short):
+        parts = [f'"{short} {w}"' for w in ("Ltd", "Limited", "shares", "stock", "share price", "results")]
+    else:
+        parts = [f'"{short}"']
+    if _code_adds_signal(name, nse_code):
         parts.append(f'"{nse_code}"')
     q = " OR ".join(parts)
     return f"({q}) {extra}".strip() if extra else q
+
+
+def _mentions_company(title: str, name: str, nse_code: Optional[str]) -> bool:
+    """Google matches article bodies too, so a headline can be about something
+    else entirely. Keep headlines that name the company: its full short name,
+    its NSE code as a word, or its first name-word as a standalone word used
+    with stock-market context ("Reliance shares", "Reliance Q1")."""
+    t = title.lower()
+    short = _short_name(name).lower()
+    if short and short in t:
+        return True
+    if nse_code and re.search(rf"\b{re.escape(nse_code.lower())}\b", t) and _code_adds_signal(name, nse_code):
+        return True
+    first = (re.findall(r"[a-z]+", short) or [""])[0]
+    if len(first) >= 4 and re.search(rf"(?<![\w-]){re.escape(first)}(?![\w-])", t):
+        return bool(re.search(r"\b(share|shares|stock|stocks|q[1-4]|results?|profit|revenue|target|"
+                              r"ipo|dividend|buyback|merger|acquisition|deal|board|ceo|ltd|group)\b", t))
+    return False
 
 
 async def fetch_news(query: str, days: int) -> list[dict]:
@@ -90,8 +129,10 @@ async def get_recent_news(symbol: str, days: int = 14, limit: int = 20) -> ToolR
     limit = max(1, min(int(limit or 20), 50))
     page = await fetch_company_page(symbol, "standalone")
     ov = parse_overview(page.html)
-    query = _news_query(ov.get("name") or page.symbol, ov.get("nse_code"))
-    items = await fetch_news(query, days)
+    name = ov.get("name") or page.symbol
+    query = _news_query(name, ov.get("nse_code"))
+    fetched = await fetch_news(query, days)
+    items = [it for it in fetched if _mentions_company(it["title"], name, ov.get("nse_code"))]
 
     warnings = list(page.warnings)
     if not items:
@@ -103,6 +144,7 @@ async def get_recent_news(symbol: str, days: int = 14, limit: int = 20) -> ToolR
             "days": days,
             "query": query,
             "count": len(items),
+            "dropped_off_topic": len(fetched) - len(items),
             "articles": items[:limit],
             "source_note": ("Headlines aggregated by Google News from third-party publishers — verify "
                             "important claims at the source. For official company filings use "

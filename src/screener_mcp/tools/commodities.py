@@ -21,7 +21,7 @@ _COMMODITY_INFO: dict[str, dict] = {
         "impact": {
             "beneficiaries": ["Titan Company", "Kalyan Jewellers", "PC Jewellers", "Senco Gold", "Rajesh Exports"],
             "hurt_by_rise": ["Manufacturers using gold as input (high cost pressure)"],
-            "screener_query": 'screen_stocks("Sales growth 3Years > 10 AND Return on capital employed > 12")',
+            "watch_symbols": ["TITAN", "KALYANKJIL", "SENCO", "RAJESHEXPO"],
             "sector_note": "Gold price drives jewellery retail margins. Rising gold = revenue boost but margin pressure for retailers."
         }
     },
@@ -32,7 +32,7 @@ _COMMODITY_INFO: dict[str, dict] = {
         "impact": {
             "beneficiaries": ["Hindustan Copper (indirect)", "EV battery manufacturers"],
             "hurt_by_rise": ["Electronics manufacturers, solar panel makers"],
-            "screener_query": 'screen_stocks("Market Capitalization < 5000 AND Return on capital employed > 15")',
+            "watch_symbols": ["HINDZINC", "VEDL"],
             "sector_note": "Silver has both industrial (EVs, solar, electronics) and investment demand."
         }
     },
@@ -43,19 +43,8 @@ _COMMODITY_INFO: dict[str, dict] = {
         "impact": {
             "beneficiaries": ["IOC", "BPCL", "HPCL", "Reliance Industries (refining margin)"],
             "hurt_by_rise": ["Asian Paints", "Pidilite", "IndiGo", "SpiceJet", "Tyre cos (CEAT, MRF, Apollo)"],
-            "screener_query": 'screen_stocks("Return on capital employed > 15 AND Debt to equity < 0.5")',
+            "watch_symbols": ["RELIANCE", "IOC", "BPCL", "HINDPETRO", "ASIANPAINT", "PIDILITIND", "INDIGO", "APOLLOTYRE", "MRF", "CEATLTD"],
             "sector_note": "Crude is the most impactful commodity for Indian markets — affects paints, tyres, aviation, fertilizers, and OMCs."
-        }
-    },
-    "crude": {
-        "name": "Crude Oil",
-        "unit": "₹/barrel",
-        "mcx_symbol": "CRUDEOIL",
-        "impact": {
-            "beneficiaries": ["IOC", "BPCL", "HPCL", "Reliance Industries"],
-            "hurt_by_rise": ["Asian Paints", "Pidilite", "IndiGo", "Tyre companies"],
-            "screener_query": 'screen_stocks("Return on capital employed > 15 AND Debt to equity < 0.5")',
-            "sector_note": "See: crude_oil"
         }
     },
     "copper": {
@@ -65,7 +54,7 @@ _COMMODITY_INFO: dict[str, dict] = {
         "impact": {
             "beneficiaries": ["Hindustan Copper", "Vedanta (copper smelting)"],
             "hurt_by_rise": ["Havells India", "Polycab", "KEI Industries", "Voltas", "Thermax (motor windings)"],
-            "screener_query": 'screen_stocks("Sales growth 3Years > 15 AND Return on capital employed > 20")',
+            "watch_symbols": ["HINDCOPPER", "VEDL", "HAVELLS", "POLYCAB", "KEI", "VOLTAS"],
             "sector_note": "Copper is critical for EV charging infra, wiring, and industrial motors. EV boom = long-term demand driver."
         }
     },
@@ -76,7 +65,7 @@ _COMMODITY_INFO: dict[str, dict] = {
         "impact": {
             "beneficiaries": ["Hindalco Industries", "NALCO", "Vedanta"],
             "hurt_by_rise": ["Auto OEMs (Maruti, Tata Motors)", "Packaging companies", "Aerospace suppliers"],
-            "screener_query": 'screen_stocks("Return on capital employed > 12 AND Debt to equity < 1")',
+            "watch_symbols": ["HINDALCO", "NATIONALUM", "VEDL", "MARUTI"],
             "sector_note": "Aluminium demand growing with EVs (lighter body parts) and renewable energy (solar frames)."
         }
     },
@@ -87,7 +76,7 @@ _COMMODITY_INFO: dict[str, dict] = {
         "impact": {
             "beneficiaries": ["Hindustan Zinc (HZL) — India's dominant producer, ~75% market share"],
             "hurt_by_rise": ["Steel companies needing galvanizing (Tata Steel, JSW Steel)"],
-            "screener_query": 'search_company("Hindustan Zinc")',
+            "watch_symbols": ["HINDZINC", "VEDL", "TATASTEEL", "JSWSTEEL"],
             "sector_note": "HZL is virtually a pure-play on zinc prices. Parent: Vedanta."
         }
     },
@@ -98,7 +87,7 @@ _COMMODITY_INFO: dict[str, dict] = {
         "impact": {
             "beneficiaries": ["Vedanta (limited)", "Import traders"],
             "hurt_by_rise": ["EV battery manufacturers (NMC batteries)", "Stainless steel producers"],
-            "screener_query": 'screen_stocks("Sales growth 3Years > 20 AND Market Capitalization < 10000")',
+            "watch_symbols": ["VEDL", "JSL"],
             "sector_note": "Nickel is a critical EV battery input — high nickel chemistry (NMC) dominates EV packs. India imports most nickel."
         }
     },
@@ -109,7 +98,7 @@ _COMMODITY_INFO: dict[str, dict] = {
         "impact": {
             "beneficiaries": ["Cotton traders", "Gin/Mill operators during high-price cycles"],
             "hurt_by_rise": ["Page Industries", "Vardhman Textiles", "Welspun India", "Trident Group"],
-            "screener_query": 'screen_by_theme("chemicals")',
+            "watch_symbols": ["PAGEIND", "VTL", "WELSPUNLIV", "TRIDENT", "ARVIND", "KPRMILL"],
             "sector_note": "Cotton is the primary input for India's textile industry. MSP (minimum support price) and monsoon drive price."
         }
     },
@@ -120,7 +109,7 @@ _COMMODITY_INFO: dict[str, dict] = {
         "impact": {
             "beneficiaries": ["City gas distribution: IGL, MGL, Gujarat Gas, Adani Gas"],
             "hurt_by_rise": ["Fertilizer makers: RCF, GNFC, Chambal Fertilisers (gas = 70-80% input cost)", "Chemicals: ONGC Petro, GSFC"],
-            "screener_query": 'screen_stocks("Sales growth 3Years > 10 AND Return on equity > 15")',
+            "watch_symbols": ["IGL", "MGL", "GUJGASLTD", "RCF", "GNFC", "CHAMBLFERT"],
             "sector_note": "India's gas price linked to APM (Admin Price Mechanism) — revised every 6 months. CGD companies pass through to consumers."
         }
     },
@@ -131,11 +120,56 @@ _COMMODITY_INFO: dict[str, dict] = {
         "impact": {
             "beneficiaries": ["Tata Steel", "JSW Steel", "SAIL", "JSPL"],
             "hurt_by_rise": ["Auto OEMs", "Capital goods", "Real estate developers", "White goods (Voltas, Whirlpool)"],
-            "screener_query": 'screen_stocks("Return on capital employed > 12 AND Debt to equity < 1.5")',
+            "watch_symbols": ["TATASTEEL", "JSWSTEEL", "SAIL", "JINDALSTEL", "MARUTI", "VOLTAS"],
             "sector_note": "Steel is linked to China demand/supply, iron ore prices, and domestic infra spending (railways, construction)."
         }
     },
+    "wheat": {
+        "name": "Wheat",
+        "unit": "₹/quintal",
+        "mcx_symbol": "WHEAT",
+        "indian_contract": "NCDEX WHEAT",
+        "impact": {
+            "beneficiaries": ["Agri-commodity exporters when export windows open"],
+            "hurt_by_rise": ["ITC (atta, biscuits — Aashirvaad, Sunfeast)", "Britannia", "Nestle India",
+                             "Flour millers"],
+            "watch_symbols": ["ITC", "BRITANNIA", "NESTLEIND"],
+            "sector_note": ("India's wheat price is set more by the MSP, FCI procurement and export curbs than by "
+                            "CBOT — treat the CBOT benchmark as direction only."),
+        }
+    },
+    "tobacco": {
+        "name": "Leaf Tobacco",
+        "unit": "₹/kg (Tobacco Board auctions)",
+        "mcx_symbol": "TOBACCO",
+        "indian_contract": None,  # Tobacco Board auctions, no exchange contract
+        "impact": {
+            "beneficiaries": ["Leaf exporters (ITC's agri business, Godfrey Phillips' leaf trade)"],
+            "hurt_by_rise": ["ITC (cigarettes)", "Godfrey Phillips", "VST Industries"],
+            "watch_symbols": ["ITC", "GODFRYPHLP", "VSTIND"],
+            "sector_note": ("Leaf tobacco is auctioned by the Tobacco Board (FCV, Andhra Pradesh/Karnataka); there "
+                            "is no exchange-traded contract. For cigarette makers, excise/NCCD/GST changes "
+                            "matter far more than leaf cost."),
+        }
+    },
+    "wood_pulp": {
+        "name": "Wood Pulp",
+        "unit": "USD/tonne (NBSK/BHKP)",
+        "mcx_symbol": "PULP",
+        "indian_contract": None,  # imported; no Indian exchange contract
+        "impact": {
+            "beneficiaries": ["Integrated paper makers with captive plantations"],
+            "hurt_by_rise": ["ITC (paperboards — partly captive pulp)", "JK Paper", "West Coast Paper",
+                             "Seshasayee Paper", "Andhra Paper"],
+            "watch_symbols": ["ITC", "JKPAPER", "WSTCSTPAPR", "SESHAPAPER", "ANDHRAPAP"],
+            "sector_note": ("Pulp has no free public futures feed (SHFE pulp is not on Yahoo). Imported pulp prices "
+                            "move paper margins; integrated mills are hedged."),
+        }
+    },
 }
+
+_ALIASES = {"crude": "crude_oil", "oil": "crude_oil", "brent": "crude_oil", "gas": "natural_gas",
+            "pulp": "wood_pulp", "paper_pulp": "wood_pulp", "leaf_tobacco": "tobacco"}
 
 
 # International benchmark futures (Yahoo Finance chart API — public, no key).
@@ -155,6 +189,7 @@ _BENCHMARKS: dict[str, tuple[str, str, str, tuple[float, str] | None]] = {
     "COTTON": ("CT=F", "ICE cotton No.2 futures", "US cents/lb", None),
     "NATURALGAS": ("NG=F", "NYMEX Henry Hub natural gas futures", "USD/mmBtu", (1.0, "₹/mmBtu")),
     "STEEL": ("HRC=F", "CME US Midwest hot-rolled coil futures", "USD/short ton", None),
+    "WHEAT": ("ZW=F", "CBOT wheat futures", "US cents/bushel", None),
 }
 
 
@@ -216,14 +251,21 @@ async def _fetch_benchmark(mcx_symbol: str, years: int) -> tuple[dict | None, st
     return out, None
 
 
+def _indian_contract(info: dict) -> str:
+    contract = info.get("indian_contract", f"MCX {info['mcx_symbol']}")
+    return f"{contract} ({info['unit']})" if contract else f"none — priced in {info['unit']}"
+
+
 async def get_commodity_prices(commodity: str, years: int = 5) -> ToolResult:
     """
     Get commodity price context and impact analysis for Indian listed companies.
 
-    commodity: gold | silver | crude_oil | copper | aluminium | zinc | nickel | cotton | natural_gas | steel
-    years: historical context period to reference in analysis (1-10)
+    commodity: gold | silver | crude_oil | copper | aluminium | zinc | nickel | cotton | natural_gas
+               | steel | wheat | tobacco | wood_pulp
+    years: history window for the benchmark moves and range (1-10)
     """
-    key = commodity.lower().replace(" ", "_").replace("-", "_")
+    key = commodity.lower().strip().replace(" ", "_").replace("-", "_")
+    key = _ALIASES.get(key, key)
 
     if key not in _COMMODITY_INFO:
         available = ", ".join(sorted(_COMMODITY_INFO.keys()))
@@ -241,7 +283,7 @@ async def get_commodity_prices(commodity: str, years: int = 5) -> ToolResult:
 
     lines = [
         f"# {info['name']} — Commodity Analysis",
-        f"Indian contract: MCX {info['mcx_symbol']} ({info['unit']}) | Context period: {years} years",
+        f"Indian contract: {_indian_contract(info)} | Context period: {years} years",
         "",
     ]
 
@@ -282,8 +324,8 @@ async def get_commodity_prices(commodity: str, years: int = 5) -> ToolResult:
         "2. **Margin impact:** Check quarterly results of affected companies — did OPM% move with commodity?",
         "   - Use `get_quarterly_results(symbol)` to verify",
         "",
-        "3. **Screener query to find affected companies:**",
-        f"   {impact['screener_query']}",
+        "3. **Compare the exposed companies:**",
+        f"   compare_companies({impact['watch_symbols'][:6]})",
         "",
         "## Live Price Sources",
         "  - MCX India (official): https://www.mcxindia.com",
@@ -291,12 +333,13 @@ async def get_commodity_prices(commodity: str, years: int = 5) -> ToolResult:
         "  - Investing.com (charts + history): https://www.investing.com/commodities",
         "  - Moneycontrol Commodities: https://www.moneycontrol.com/commodity",
         "",
-        "**Note:** This tool provides analytical context. For live trading prices and historical charts,",
-        "use MCX/NCDEX directly. Screener.in's commodity data covers 10,000+ commodities (premium feature).",
+        "**Note:** The benchmark is the international contract MCX/NCDEX track, not the domestic quote —",
+        "use MCX/NCDEX for the Indian price.",
     ]
 
     return ToolResult(
-        data={"commodity": key, "benchmark": benchmark, "report": "\n".join(lines)},
+        data={"commodity": key, "benchmark": benchmark, "watch_symbols": impact["watch_symbols"],
+              "report": "\n".join(lines)},
         missing_fields=[] if benchmark else ["benchmark_price"],
         reason=None if benchmark else f"{unavailable} The analysis below is context only.",
     )

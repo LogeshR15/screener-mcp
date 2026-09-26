@@ -1,5 +1,5 @@
 """
-Shareholder search — find bulk deal activity by investor/entity name via NSE.
+NSE bulk deals — by company, by investor/entity name, or both.
 """
 
 import logging
@@ -39,21 +39,21 @@ def _coverage(days: int, days_queried: int, failed: list[str]) -> tuple[list[str
     return warnings, partial, reason
 
 
-async def search_shareholder(
-    name: str,
-    symbol: str = None,
-    days: int = 365,
-) -> ToolResult:
+async def get_bulk_deals(symbol: str = "", name: str = "", days: int = 30) -> ToolResult:
     """
-    Search NSE bulk/block deals for a shareholder name.
+    NSE bulk deals (single trades > 0.5% of equity), filtered by company,
+    by investor name, or both.
 
-    Note: Only captures NSE bulk deals (single trade > 0.5% of equity).
+    symbol: restrict to one company's deals
+    name: partial client name to match ("Jhunjhunwala", "SBI Mutual Fund")
     """
-    if not name.strip():
-        raise ToolError("Please provide a shareholder name to search.", "invalid_input")
+    symbol, name = (symbol or "").strip(), (name or "").strip()
+    if not symbol and not name:
+        raise ToolError("Pass a `symbol` (one company's deals), a `name` (one investor's deals), or both.",
+                        "invalid_input")
+    days = max(1, min(int(days or 30), 365))
 
-    warnings, meta = [], {}
-    nse_symbol = None
+    warnings, meta, nse_symbol = [], {}, None
     if symbol:
         nse_symbol, warnings, meta = await resolve_nse_symbol(symbol)
 
@@ -62,56 +62,28 @@ async def search_shareholder(
     from_date = (datetime.now() - timedelta(days=days)).strftime("%d-%m-%Y")
     deals, failed, days_queried = await nse.get_bulk_deals(from_date, to_date, symbol=nse_symbol)
 
-    name_lower = name.lower()
-    matched = [d for d in deals if name_lower in str(d.get("clientName", "")).lower()]
-    cov_warnings, partial, reason = _coverage(days, days_queried, failed)
-    warnings += cov_warnings
-    if not matched:
-        warnings.append(
-            f"No bulk deals by '{name}' among {len(deals)} deals searched. Bulk deals only cover single "
-            "trades > 0.5% of equity — use get_shareholding_pattern for gradual accumulation."
-        )
-    return ToolResult(
-        data={
-            "name": name,
-            "symbol": nse_symbol,
-            "period": {"from": from_date, "to": to_date, "days_searched": days_queried},
-            "deals_searched": len(deals),
-            "matches": len(matched),
-            "deals": [_deal_row(d, with_symbol=True) for d in matched[:100]],
-        },
-        warnings=warnings,
-        partial=partial,
-        reason=reason,
-        meta=meta,
-    )
-
-
-async def get_bulk_deals(symbol: str, days: int = 90) -> ToolResult:
-    """
-    All NSE bulk deals for one company — no investor name required.
-
-    Note: Only captures NSE bulk deals (single trade > 0.5% of equity).
-    """
-    nse_symbol, warnings, meta = await resolve_nse_symbol(symbol)
-    nse = await get_nse_client()
-    to_date = datetime.now().strftime("%d-%m-%Y")
-    from_date = (datetime.now() - timedelta(days=days)).strftime("%d-%m-%Y")
-    deals, failed, days_queried = await nse.get_bulk_deals(from_date, to_date, symbol=nse_symbol)
-
+    searched = len(deals)
+    if name:
+        needle = name.lower()
+        deals = [d for d in deals if needle in str(d.get("clientName", "")).lower()]
     cov_warnings, partial, reason = _coverage(days, days_queried, failed)
     warnings += cov_warnings
     if not deals:
+        scope = " ".join(filter(None, [f"by '{name}'" if name else "",
+                                       f"in {nse_symbol}" if nse_symbol else "across NSE"]))
         warnings.append(
-            f"No bulk deals for {nse_symbol} in the days searched. That's common — bulk deals "
-            "(>0.5% of equity in one trade) are rare. Use get_shareholding_pattern for FII/DII/promoter trends."
+            f"No bulk deals {scope} among {searched} deal(s) on the {days_queried} day(s) searched. "
+            "The NSE feed responded, so this is a real empty result — bulk deals only cover single trades "
+            "> 0.5% of equity; use get_shareholding_pattern for gradual accumulation."
         )
     return ToolResult(
         data={
             "symbol": nse_symbol,
+            "name": name or None,
             "period": {"from": from_date, "to": to_date, "days_searched": days_queried},
+            "deals_searched": searched,
             "count": len(deals),
-            "deals": [_deal_row(d, with_symbol=False) for d in deals[:100]],
+            "deals": [_deal_row(d, with_symbol=not nse_symbol) for d in deals[:100]],
         },
         warnings=warnings,
         partial=partial,

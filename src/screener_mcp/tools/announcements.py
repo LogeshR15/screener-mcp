@@ -11,7 +11,13 @@ from ..core.nse_client import get_nse_client
 
 logger = logging.getLogger(__name__)
 
+# Checked in order. Rating categories come first: their filings often mention
+# NCDs or results ("rating for NCDs"), which would otherwise win. NSE files ESG
+# scores under "Credit Rating" too, so ESG is split out before credit ratings.
 _CATEGORY_KEYWORDS: dict[str, list[str]] = {
+    "esg_rating": ["esg score", "esg rating", "esg risk", "esg ratings"],
+    "credit_rating": ["credit rating", "rating action", "crisil", "icra", "care ratings", "india ratings",
+                      "rating agency", "acuite", "brickwork", "infomerics"],
     "results": ["financial results", "quarterly results", "annual results", "q1", "q2", "q3", "q4", "half year"],
     "board_meeting": ["board meeting", "board of directors"],
     "dividend": ["dividend"],
@@ -20,8 +26,11 @@ _CATEGORY_KEYWORDS: dict[str, list[str]] = {
     "acquisition": ["acquisition", "merger", "demerger", "amalgamation", "takeover"],
     "buyback": ["buyback", "buy-back", "share repurchase"],
     "fund_raise": ["rights issue", "ipo", "fpo", "ncd", "debenture", "preferential allotment"],
-    "credit_rating": ["credit rating", "rating action", "crisil", "icra", "care ratings", "india ratings", "rating agency"],
 }
+
+# Rating actions are infrequent (often 1-2 a year), so a 30-day default window
+# usually finds nothing — these categories default to two years.
+_DEFAULT_DAYS = {"credit_rating": 730, "esg_rating": 730}
 
 
 def _categorize(headline: str, subject: str) -> str:
@@ -43,14 +52,14 @@ def _within_days(date_str: str, days: int) -> bool:
     return True  # include if unparseable
 
 
-async def _fetch_filtered(symbol: str, category: str, days: int) -> tuple[str, list[dict], int, list[str], dict]:
+async def _fetch_filtered(symbol: str, category: str, days: int) -> tuple[str, list[dict], int, int, list[str], dict]:
     valid_categories = {"all"} | set(_CATEGORY_KEYWORDS.keys())
     if category not in valid_categories:
         raise ToolError(
             f"Invalid category '{category}'. Valid options: {', '.join(sorted(valid_categories))}",
             "invalid_input",
         )
-    days = max(1, min(int(days or 30), 3650))
+    days = max(1, min(int(days or _DEFAULT_DAYS.get(category, 30)), 3650))
     nse_symbol, warnings, meta = await resolve_nse_symbol(symbol)
     nse = await get_nse_client()
     items = await nse.get_announcements(nse_symbol)  # raises NSEError on failure
@@ -71,27 +80,32 @@ async def _fetch_filtered(symbol: str, category: str, days: int) -> tuple[str, l
         }
         for a in filtered
     ]
-    return nse_symbol, rows, len(items), warnings, meta
+    return nse_symbol, rows, len(items), days, warnings, meta
 
 
 async def get_company_announcements(
     symbol: str,
     category: str = "all",
-    days: int = 30,
+    days: int = 0,
 ) -> ToolResult:
     """
     Fetch recent company announcements from NSE.
 
     symbol: NSE trading symbol or company name (resolved via Screener.in)
     category: "all" | "results" | "board_meeting" | "dividend" | "insider_trading"
-              | "agm" | "acquisition" | "buyback" | "fund_raise" | "credit_rating"
-    days: look back this many days (default 30)
+              | "agm" | "acquisition" | "buyback" | "fund_raise" | "credit_rating" | "esg_rating"
+    days: look back this many days (0 = default: 730 for rating categories, else 30)
     """
-    nse_symbol, rows, total, warnings, meta = await _fetch_filtered(symbol, category, days)
+    nse_symbol, rows, total, days, warnings, meta = await _fetch_filtered(symbol, category, days)
     if total == 0:
         warnings.append(
             f"NSE returned no announcements at all for {nse_symbol}. The request succeeded, "
             "so this is NSE's answer rather than a failure — but it's unusual for a listed company."
+        )
+    elif not rows and category == "credit_rating":
+        warnings.append(
+            f"No credit rating actions for {nse_symbol} in the last {days} days ({total} announcements "
+            "fetched). Often this means the company has no rated debt (common for low-debt businesses)."
         )
     elif not rows:
         warnings.append(
@@ -110,29 +124,6 @@ async def get_company_announcements(
             "matches": len(rows),
             "announcements": rows[:limit],
         },
-        warnings=warnings,
-        meta=meta,
-    )
-
-
-async def get_credit_ratings(symbol: str, days: int = 730) -> ToolResult:
-    """
-    Credit rating actions (CRISIL/ICRA/CARE/India Ratings) for a company —
-    a governance/debt-quality check for long-term holders.
-
-    days: look back this many days (default 730 — rating actions are infrequent,
-          often just 1-2 per year, so a short window usually finds nothing)
-    """
-    nse_symbol, rows, total, warnings, meta = await _fetch_filtered(symbol, "credit_rating", days)
-    if not rows:
-        warnings.append(
-            f"No credit rating actions found for {nse_symbol} in the last {days} days. This can mean "
-            "the company has no rated debt (common for low-debt businesses), or the filing didn't use "
-            "standard wording — check get_company_announcements(category='all') for CRISIL/ICRA/CARE mentions."
-        )
-    return ToolResult(
-        data={"symbol": nse_symbol, "days": days, "rating_actions": rows[:50],
-              "total_announcements_fetched": total},
         warnings=warnings,
         meta=meta,
     )

@@ -18,7 +18,7 @@ source .venv/bin/activate        # Windows: .venv\Scripts\activate
 # Core install
 pip install -e ".[dev]"
 
-# For document analysis tools (analyze_annual_report, analyze_earnings_call)
+# For document analysis tools (ask_company_research, search_market_commentary)
 pip install -e ".[ai]"           # adds pdfplumber, chromadb, sentence-transformers
 ```
 
@@ -67,7 +67,7 @@ screener-mcp/
 │   └── fixtures/                      # Trimmed real Screener pages
 ├── scripts/canary.py                  # Live checks against Screener.in (runs daily in CI)
 └── src/screener_mcp/
-    ├── server.py                      # FastMCP — all 33 tool definitions (start here)
+    ├── server.py                      # FastMCP — all 30 tool definitions (start here)
     ├── client.py                      # Screener.in HTTP client + auth
     ├── core/
     │   ├── envelope.py                # Standard response envelope (ToolResult, ToolError)
@@ -76,6 +76,8 @@ screener-mcp/
     │   ├── technicals.py              # Price history → 52W range, DMA, RSI, volume ratio
     │   ├── indices.py                 # NSE index universes + sector benchmarks
     │   ├── nse_client.py              # NSE India API client (announcements, filings)
+    │   ├── history.py                 # Year-by-year series, computed ROE / debt-to-equity, CAGR
+    │   ├── valuation_history.py       # Year-end P/E and P/B from Screener's chart API
     │   ├── rag.py                     # PDF processing + semantic search pipeline
     │   └── vector_store.py            # ChromaDB wrapper for document indexing
     ├── parsers/
@@ -85,10 +87,10 @@ screener-mcp/
         ├── company_tools.py           # Financials, overview, shareholding, peers
         ├── screening_tools.py         # Screen queries + 15 pre-built themes
         ├── technical_tools.py         # Technical screens, 52W-low candidates, sector-relative
-        ├── analysis_tools.py          # Red flags, deep analysis, beginner explainer
+        ├── analysis_tools.py          # Full analysis, rule-based red flags
         ├── documents.py               # Annual reports + earnings calls via RAG
-        ├── announcements.py           # NSE corporate announcements
-        ├── shareholders.py            # Bulk deal / shareholder search
+        ├── announcements.py           # NSE corporate announcements (incl. credit/ESG ratings)
+        ├── shareholders.py            # NSE bulk deals (by company and/or investor)
         ├── commodities.py             # Commodity price analysis
         └── notebook.py               # Persistent research notes
 ```
@@ -158,25 +160,37 @@ async def get_concall_schedule(symbol: str) -> dict:
 
 ## Adding a new screening theme
 
-Open `src/screener_mcp/tools/screening_tools.py` and add to both dicts:
+Open `src/screener_mcp/tools/screening_tools.py` and add an entry to `THEMES`.
+A theme is either a Screener query run across the market:
 
 ```python
-QUERY_TEMPLATES = {
+THEMES = {
     ...
-    "asset_light": (
-        "Return on capital employed > 25 AND "
-        "Net cash flow last year > 0 AND "
-        "Debt to equity < 0.2"
-    ),
-}
-
-THEME_DESCRIPTIONS = {
-    ...
-    "asset_light": "Capital-light businesses with high ROCE and positive free cash flow",
+    "asset_light": {
+        "description": "Capital-light businesses with high ROCE and positive free cash flow",
+        "query": "Return on capital employed > 25 AND Net cash flow last year > 0 AND Debt to equity < 0.2",
+    },
 }
 ```
 
-Done — immediately available via `screen_by_theme("asset_light")` and `list_investment_themes()`.
+or, for a sector, a universe of the companies actually in it plus filters.
+Screener's query language has no industry field, so a sector can't be a
+query. Universe sources are `("index", <key in core/indices.py>)`,
+`("industry", "/market/…/")` (the Industry link on any company page) and
+`("symbols", [...])` for a curated list. Filters may only use columns those
+pages carry — see the comment above `THEMES`:
+
+```python
+    "cement": {
+        "description": "Cement makers with ROE > 12%",
+        "universe": [("industry", "/market/IN01/IN0102/IN010203/IN010203001/")],  # Cement & Cement Products
+        "filters": "Market Capitalization > 1000 AND Return on equity > 12",
+    },
+```
+
+Done — immediately available via `screen_by_theme("asset_light")`, and the
+theme's criteria appear in `screen_by_theme`'s tool description
+automatically. Add it to the README theme list too (a test checks).
 
 ---
 
@@ -210,17 +224,22 @@ Then import and use it in your tool file.
 
 ## How the RAG pipeline works
 
-`analyze_annual_report` and `analyze_earnings_call` use a fully local RAG pipeline — no external AI API needed:
+`ask_company_research` (and `search_market_commentary`, `get_forward_outlook`) use a fully local RAG pipeline — no external AI API needed:
 
 ```
 PDF URL
   → httpx download (cached to ~/.screener-mcp/pdf_cache/)
-  → pdfplumber: extract text per page
+  → pdfplumber: extract text per page (split two-column pages at the gutter,
+    drop rotated/mirrored glyphs)
   → chunk: 500-word segments with 60-word overlap
   → sentence-transformers: embed each chunk (all-MiniLM-L6-v2, ~80 MB, local)
   → ChromaDB: store with page metadata (cached to ~/.screener-mcp/chroma_db/)
-  → query: embed question → cosine similarity → top-5 chunks
-  → return excerpts for Claude to reason over
+  → query: embed question → nearest neighbours → rerank (keyword boost,
+    BRSR penalty, one hit per ~3-page window)
+  → return ~900-character excerpts for Claude to reason over
+
+If you change extraction or chunking, bump `INDEX_VERSION` in `core/rag.py`
+so existing caches are rebuilt.
 ```
 
 To extend this (e.g., support HTML transcripts, SEBI filings, or BSE documents), edit `core/rag.py`.

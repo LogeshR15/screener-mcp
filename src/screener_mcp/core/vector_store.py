@@ -26,7 +26,7 @@ class VectorStore:
             except ImportError:
                 raise ImportError(
                     "chromadb not installed. Run: pip install chromadb\n"
-                    "This is required for document analysis (analyze_annual_report, analyze_earnings_call)."
+                    "This is required for document analysis (ask_company_research, search_market_commentary)."
                 )
             self.persist_dir.mkdir(parents=True, exist_ok=True)
             self._client = chromadb.PersistentClient(path=str(self.persist_dir))

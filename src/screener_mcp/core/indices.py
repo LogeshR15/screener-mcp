@@ -35,6 +35,7 @@ INDICES: dict[str, tuple[str, str, str]] = {
     "media": ("CNXMEDIA", "1272799", "Nifty Media"),
     "defence": ("NIFINDDEFE", "1285154", "Nifty India Defence"),
     "chemicals": ("NFTCHEMIC", "1285958", "Nifty Chemicals"),
+    "ev": ("NIFTYEVNAA", "1285263", "Nifty EV & New Age Automotive"),
     "consumer_durables": ("NFTCONSDUR", "1275138", "Nifty Consumer Durables"),
     "capital_markets": ("NIFCAPMARK", "1285161", "Nifty Capital Markets"),
     "commodities": ("CNXCOMMODI", "1272802", "Nifty Commodities"),

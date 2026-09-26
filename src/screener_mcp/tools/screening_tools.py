@@ -7,7 +7,11 @@ import asyncio
 import re
 from typing import Optional
 
+from ..core.company_page import fetch_company_page
 from ..core.envelope import ToolError, ToolResult
+from ..core.indices import resolve_index
+from ..core.numbers import to_number
+from ..parsers.company import parse_overview
 from .research_tools import relative_valuation_for
 from .technical_tools import (
     DEFAULT_MAX_CANDIDATES,
@@ -16,120 +20,127 @@ from .technical_tools import (
     run_technical_screen,
 )
 
-# ─── Pre-built query templates ─────────────────────────────────────────────────
-# These map natural language themes to Screener query strings.
+# ─── Pre-built themes ─────────────────────────────────────────────────────────
+# Two kinds:
+#   * "query" themes are a Screener query run across the whole market.
+#   * sector themes have a "universe" — the companies actually in the sector,
+#     from NSE index constituents, Screener industry pages, or a curated list
+#     where neither exists — and "filters" applied to those companies' rows.
+#     Screener's query language has no industry field, so a sector can't be
+#     expressed as a query; running a generic growth screen and calling it
+#     "defense" returned mostly non-defense stocks.
+#
+# Sector filters may only use columns the universe pages carry: index and
+# industry tables have Market Capitalization, Price to Earning, Return on
+# equity, Profit growth 5Years, Dividend yield, ...; curated lists are read
+# from company pages (Market Capitalization, Price to Earning, Return on
+# equity, Return on capital employed, Dividend yield).
 
-QUERY_TEMPLATES = {
-    # Quality & Value
-    "undervalued_small_cap": (
-        "Market Capitalization < 5000 AND "
-        "Return on capital employed > 15 AND "
-        "Debt to equity < 0.5 AND "
-        "Profit growth 3Years > 10 AND "
-        "Price to Earning < 20"
-    ),
-    "high_roce_low_debt": (
-        "Return on capital employed > 20 AND "
-        "Debt to equity < 0.3 AND "
-        "Profit growth 5Years > 12"
-    ),
-    "compounders": (
-        "Sales growth 5Years > 15 AND "
-        "Profit growth 5Years > 15 AND "
-        "Return on equity > 15 AND "
-        "Debt to equity < 0.5 AND "
-        "Return on capital employed > 15"
-    ),
-    "turnaround": (
-        "Profit growth 3Years > 25 AND "
-        "Profit growth last year > 20 AND "
-        "Sales growth 3Years > 10 AND "
-        "Return on capital employed > 10"
-    ),
-    "rising_profit_falling_price": (
-        "Profit growth 3Years > 15 AND "
-        "Sales growth 3Years > 10 AND "
-        "Price to Earning < 15"
-    ),
-    "improving_roce": (
-        "Return on capital employed > 15 AND "
-        "Profit growth 5Years > 12 AND "
-        "Debt to equity < 1"
-    ),
-    "hidden_gems": (
-        "Market Capitalization < 5000 AND "
-        "Return on capital employed > 15 AND "
-        "Sales growth 5Years > 15 AND "
-        "Debt to equity < 0.5"
-    ),
-    "dividend_aristocrats": (
-        "Dividend yield > 2 AND "
-        "Profit growth 5Years > 8 AND "
-        "Return on equity > 12 AND "
-        "Debt to equity < 0.5"
-    ),
+_IND = {
+    "aerospace_defense": "/market/IN07/IN0702/IN070201/IN070201001/",
+    "shipbuilding": "/market/IN07/IN0702/IN070204/IN070204006/",
+    "railway_wagons": "/market/IN07/IN0702/IN070204/IN070204005/",
+    "specialty_chemicals": "/market/IN01/IN0101/IN010101/IN010101002/",
+}
+CURATED_AS_OF = "2026-09"
 
-    # Sector themes
-    "ev_theme": (
-        "Sales growth 3Years > 15 AND "
-        "Debt to equity < 1"
-        # User should filter by sector manually; Screener doesn't have EV-tag filter
-    ),
-    "chemicals": (
-        "Debt to equity < 0.5 AND "
-        "Profit growth 5Years > 15 AND "
-        "Return on capital employed > 15 AND "
-        "Sales growth 5Years > 12"
-    ),
-    "defense": (
-        "Sales growth 3Years > 15 AND "
-        "Return on capital employed > 12"
-    ),
-    "railways": (
-        "Sales growth 3Years > 15 AND "
-        "Profit growth 3Years > 20 AND "
-        "Debt to equity < 1"
-    ),
-    "renewable_energy": (
-        "Sales growth 3Years > 15 AND "
-        "Debt to equity < 2"
-    ),
-
-    # Quality at reasonable price
-    "qarp": (
-        "Price to Earning < 25 AND "
-        "Return on equity > 15 AND "
-        "Profit growth 5Years > 12 AND "
-        "Debt to equity < 0.5 AND "
-        "Market Capitalization > 1000"
-    ),
-
-    # Micro caps with momentum
-    "micro_cap_growth": (
-        "Market Capitalization < 1000 AND "
-        "Sales growth 3Years > 20 AND "
-        "Profit growth 3Years > 20 AND "
-        "Return on capital employed > 15"
-    ),
+THEMES: dict[str, dict] = {
+    "undervalued_small_cap": {
+        "description": "Small caps (< ₹5000 Cr) with ROCE > 15%, low debt, P/E < 20",
+        "query": "Market Capitalization < 5000 AND Return on capital employed > 15 AND Debt to equity < 0.5 "
+                 "AND Profit growth 3Years > 10 AND Price to Earning < 20",
+    },
+    "high_roce_low_debt": {
+        "description": "ROCE > 20%, debt-to-equity < 0.3, 5-year profit growth > 12%",
+        "query": "Return on capital employed > 20 AND Debt to equity < 0.3 AND Profit growth 5Years > 12",
+    },
+    "compounders": {
+        "description": "15%+ five-year sales and profit growth with ROE and ROCE > 15%, low debt",
+        "query": "Sales growth 5Years > 15 AND Profit growth 5Years > 15 AND Return on equity > 15 "
+                 "AND Debt to equity < 0.5 AND Return on capital employed > 15",
+    },
+    "turnaround": {
+        "description": "Strong recent profit recovery on growing sales",
+        "query": "Profit growth 3Years > 25 AND Profit growth last year > 20 AND Sales growth 3Years > 10 "
+                 "AND Return on capital employed > 10",
+    },
+    "rising_profit_falling_price": {
+        "description": "Profits up 15%+ a year over 3 years while the share price fell over the last year, P/E < 15",
+        "query": "Profit growth 3Years > 15 AND Sales growth 3Years > 10 AND Return over 1year < 0 "
+                 "AND Price to Earning < 15",
+    },
+    "improving_roce": {
+        "description": "ROCE > 15% and higher than both last year's and its 5-year average",
+        "query": "Return on capital employed > 15 AND Return on capital employed > Return on capital employed "
+                 "preceding year AND Return on capital employed > Average return on capital employed 5Years "
+                 "AND Debt to equity < 1",
+    },
+    "hidden_gems": {
+        "description": "Small cap (< ₹5000 Cr), ROCE > 15%, 5-year sales growth > 15%, low debt",
+        "query": "Market Capitalization < 5000 AND Return on capital employed > 15 AND Sales growth 5Years > 15 "
+                 "AND Debt to equity < 0.5",
+    },
+    "dividend_aristocrats": {
+        "description": ("Yield > 2%, a dividend paid in each of the last two years and a 3-year average payout "
+                        "> 20%, with ROE > 12% and low debt (Screener has no longer dividend-streak field)"),
+        "query": "Dividend yield > 2 AND Dividend last year > 0 AND Dividend preceding year > 0 AND "
+                 "Average dividend payout 3years > 20 AND Return on equity > 12 AND Debt to equity < 0.5",
+    },
+    "qarp": {
+        "description": "Quality at a reasonable price: P/E < 25, ROE > 15%, profit growth > 12%, low debt, > ₹1000 Cr",
+        "query": "Price to Earning < 25 AND Return on equity > 15 AND Profit growth 5Years > 12 "
+                 "AND Debt to equity < 0.5 AND Market Capitalization > 1000",
+    },
+    "micro_cap_growth": {
+        "description": "Micro caps (< ₹1000 Cr) with 20%+ three-year sales and profit growth, ROCE > 15%",
+        "query": "Market Capitalization < 1000 AND Sales growth 3Years > 20 AND Profit growth 3Years > 20 "
+                 "AND Return on capital employed > 15",
+    },
+    # ── sector themes ──
+    "defense": {
+        "description": "Defence companies (Nifty India Defence + Screener's Aerospace & Defense and "
+                       "Shipbuilding industries) with ROE > 12% and profit growth",
+        "universe": [("index", "defence"), ("industry", _IND["aerospace_defense"]), ("industry", _IND["shipbuilding"])],
+        "filters": "Market Capitalization > 500 AND Return on equity > 12 AND Profit growth 5Years > 10",
+    },
+    "ev_theme": {
+        "description": "Nifty EV & New Age Automotive constituents (EV makers, batteries, auto components) "
+                       "with ROE > 12%",
+        "universe": [("index", "ev")],
+        "filters": "Market Capitalization > 1000 AND Return on equity > 12",
+    },
+    "chemicals": {
+        "description": "Specialty chemicals (Screener's Specialty Chemicals industry + Nifty Chemicals) with "
+                       "ROE > 15% and 5-year profit growth > 12%",
+        "universe": [("industry", _IND["specialty_chemicals"]), ("index", "chemicals")],
+        "filters": "Market Capitalization > 500 AND Return on equity > 15 AND Profit growth 5Years > 12",
+    },
+    "railways": {
+        "description": "Railway companies (Screener's Railway Wagons industry + a curated list of railway "
+                       "PSUs and suppliers) with ROE > 12%",
+        "universe": [("industry", _IND["railway_wagons"]),
+                     ("symbols", ["RVNL", "IRCON", "IRFC", "RAILTEL", "IRCTC", "RITES", "CONCOR", "BEML",
+                                  "HBLENGINE", "KERNEX"])],
+        "filters": "Market Capitalization > 500 AND Return on equity > 12",
+    },
+    "renewable_energy": {
+        "description": "Renewable energy (curated list: wind/solar equipment makers and green power producers) "
+                       "with ROE > 10%",
+        "universe": [("symbols", ["SUZLON", "INOXWIND", "WAAREEENER", "PREMIERENE", "NTPCGREEN", "ACMESOLAR",
+                                  "KPIGREEN", "ADANIGREEN", "JSWENERGY", "TATAPOWER", "BORORENEW", "SWSOLAR",
+                                  "WEBELSOLAR", "INOXGREEN"])],
+        "filters": "Market Capitalization > 500 AND Return on equity > 10",
+    },
 }
 
-THEME_DESCRIPTIONS = {
-    "ev_theme": "EV & Auto ancillary companies with strong growth",
-    "chemicals": "Specialty chemicals with low debt and strong growth",
-    "defense": "Defense sector with revenue momentum",
-    "railways": "Railway infra/equipment with profit growth",
-    "renewable_energy": "Renewable energy companies with revenue growth",
-    "undervalued_small_cap": "Small caps (< ₹5000 Cr) with high ROCE, low debt",
-    "high_roce_low_debt": "High ROCE (>20%) companies with minimal debt",
-    "compounders": "Classic compounders: 15%+ growth on all fronts",
-    "turnaround": "Turnaround stories with strong recent recovery",
-    "rising_profit_falling_price": "Improving profits with low PE (potential value)",
-    "improving_roce": "Companies with ROCE >15% and profit momentum",
-    "hidden_gems": "Hidden gems: small cap, high ROCE, strong growth",
-    "dividend_aristocrats": "Consistent dividend payers with quality financials",
-    "qarp": "Quality at reasonable price (QARP)",
-    "micro_cap_growth": "High-growth micro caps (< ₹1000 Cr)",
-}
+
+def theme_catalog() -> str:
+    """Every theme with its criteria — used as the screen_by_theme docstring."""
+    lines = []
+    for key, t in THEMES.items():
+        crit = t.get("query") or f"sector universe; filters: {t['filters']}"
+        lines.append(f"      {key} — {t['description']}\n          {crit}")
+    return "\n".join(lines)
 
 
 _LOGIN_REQUIRED_MSG = """
@@ -186,6 +197,9 @@ def sanity_flags(fundamentals: dict) -> list[str]:
         flags.append("negligible sales (≤ ₹0.5 Cr last quarter)")
     if price is not None and price < 1:
         flags.append("price below ₹1")
+    dy = num("Dividend yield")
+    if dy is not None and dy > 25:
+        flags.append(f"dividend yield of {dy:g}% — a special dividend or stale price, not a recurring yield")
     return flags
 
 
@@ -239,12 +253,15 @@ async def screen_stocks(
     min_market_cap: float = DEFAULT_MIN_MARKET_CAP,
     exclude_flagged: bool = True,
     peer_relative: bool = False,
+    page: int = 1,
 ) -> ToolResult:
     """
     Run a Screener.in query, optionally mixed with technical clauses, with
-    AND / OR / parentheses.
+    AND / OR / parentheses. `page` pages through results `limit` at a time.
     """
     limit = max(1, min(int(limit or 25), 200))
+    page = max(1, int(page or 1))
+    offset = (page - 1) * limit
     groups = parse_query(query)
     warnings: list[str] = []
     guard = f"Market Capitalization > {min_market_cap:g}" if min_market_cap and not _mentions_mcap(query) else None
@@ -298,7 +315,8 @@ async def screen_stocks(
             screener_query = query if not guard else (
                 f"({query}) AND {guard}" if re.search(r"\bOR\b", query, re.I) else f"{query} AND {guard}")
             rows, total = await fetch_candidates(
-                query=screener_query, max_rows=limit + (25 if exclude_flagged else 0), sort=sort_by, order=order)
+                query=screener_query, max_rows=offset + limit + (25 if exclude_flagged else 0),
+                sort=sort_by, order=order)
             data = {"query": query, "screener_query": screener_query, "total_matches": total}
             partial, reason = False, None
             guard_used = bool(guard)
@@ -322,7 +340,11 @@ async def screen_stocks(
 
     if any(tech for _, tech in groups):
         data["matches_found"] = len(rows)  # after hygiene, before the limit cut
-    rows = rows[:limit]
+    available = len(rows)
+    rows = rows[offset:offset + limit]
+    data["page"] = page
+    if offset and not rows:
+        warnings.append(f"Page {page} is past the end of the results ({available} after filtering).")
     if peer_relative and rows:
         await _attach_peer_relative(rows, warnings)
     if not rows:
@@ -341,55 +363,140 @@ async def screen_stocks(
     return ToolResult(data=data, warnings=warnings, partial=partial, reason=reason)
 
 
-async def screen_by_theme(theme: str, limit: int = 20) -> ToolResult:
-    """
-    Run a pre-built thematic screen.
+_CLAUSE_RE = re.compile(r"^\s*(.+?)\s*(>=|<=|>|<|=)\s*(-?\d+(?:\.\d+)?)\s*$")
+_OPS = {">": float.__gt__, "<": float.__lt__, ">=": float.__ge__, "<=": float.__le__, "=": float.__eq__}
 
-    Available themes:
-      undervalued_small_cap, high_roce_low_debt, compounders, turnaround,
-      rising_profit_falling_price, improving_roce, hidden_gems,
-      dividend_aristocrats, qarp, micro_cap_growth,
-      ev_theme, chemicals, defense, railways, renewable_energy
-    """
-    # Fuzzy match theme
-    theme_key = _match_theme(theme)
-    if not theme_key:
+
+def parse_filters(expr: str) -> list[tuple[str, str, float]]:
+    """'Market Capitalization > 500 AND Return on equity > 12' → [(field, op, value), ...]."""
+    out = []
+    for clause in re.split(r"\s+AND\s+", expr.strip(), flags=re.I):
+        m = _CLAUSE_RE.match(clause)
+        if not m:
+            raise ValueError(f"Unsupported sector-theme filter clause: {clause!r}")
+        out.append((m.group(1), m.group(2), float(m.group(3))))
+    return out
+
+
+def _passes(fundamentals: dict, filters: list[tuple[str, str, float]]) -> tuple[bool, list[str]]:
+    """(passes, fields missing from the row). A row missing a field fails —
+    it can't be shown to meet a criterion it has no number for."""
+    missing = [f for f, _, _ in filters if not isinstance(fundamentals.get(f), (int, float))]
+    if missing:
+        return False, missing
+    return all(_OPS[op](float(fundamentals[f]), v) for f, op, v in filters), []
+
+
+_PAGE_FIELDS = {  # company-page top ratio → screen column name
+    "Market Cap": "Market Capitalization", "Stock P/E": "Price to Earning", "ROE": "Return on equity",
+    "ROCE": "Return on capital employed", "Dividend Yield": "Dividend yield", "Book Value": "Book value",
+}
+
+
+async def _symbol_rows(symbols: list[str], warnings: list[str]) -> list[dict]:
+    async def one(sym: str) -> dict:
+        page = await fetch_company_page(sym, "consolidated")
+        ov = parse_overview(page.html)
+        f = {"Current Price": to_number(ov.get("current_price"))}
+        f.update({out: to_number(ov.get("key_ratios", {}).get(src)) for src, out in _PAGE_FIELDS.items()})
+        return {"symbol": page.symbol, "name": ov.get("name"), "company_id": page.company_id, "fundamentals": f}
+
+    results = await asyncio.gather(*[one(s) for s in symbols], return_exceptions=True)
+    failed = [s for s, r in zip(symbols, results) if isinstance(r, Exception)]
+    if failed:
+        warnings.append(f"Couldn't fetch {len(failed)} curated symbol(s): {', '.join(failed)}.")
+    return [r for r in results if not isinstance(r, Exception)]
+
+
+async def _universe_rows(universe: list[tuple], warnings: list[str]) -> tuple[list[dict], list[dict]]:
+    """Rows for every company in a sector universe, de-duplicated → (rows, sources)."""
+    rows: dict[str, dict] = {}
+    sources = []
+    for kind, ref in universe:
+        if kind == "index":
+            key, slug, _, display = resolve_index(ref)
+            got, _ = await fetch_candidates(index_slug=slug, max_rows=500)
+            sources.append({"type": "nse_index", "name": display, "companies": len(got)})
+        elif kind == "industry":
+            got, _ = await fetch_candidates(page_path=ref, max_rows=500)
+            sources.append({"type": "screener_industry", "url": f"https://www.screener.in{ref}", "companies": len(got)})
+        else:
+            got = await _symbol_rows(ref, warnings)
+            sources.append({"type": "curated_list", "as_of": CURATED_AS_OF, "symbols": ref, "companies": len(got)})
+        for r in got:
+            rows.setdefault(r["company_id"] or r["symbol"], r)
+    return list(rows.values()), sources
+
+
+async def _sector_screen(key: str, theme: dict, limit: int, page: int) -> ToolResult:
+    warnings: list[str] = []
+    filters = parse_filters(theme["filters"])
+    universe, sources = await _universe_rows(theme["universe"], warnings)
+
+    matched, missing_counts = [], {}
+    for r in universe:
+        ok, missing = _passes(r.get("fundamentals") or {}, filters)
+        for f in missing:
+            missing_counts[f] = missing_counts.get(f, 0) + 1
+        if ok:
+            matched.append(r)
+    if missing_counts:
+        warnings.append("Excluded for lacking a filter field on the source page: "
+                        + ", ".join(f"{n} without {f}" for f, n in missing_counts.items()) + ".")
+    matched, excluded = _apply_hygiene(matched, exclude_flagged=True)
+    matched.sort(key=lambda r: (r.get("fundamentals") or {}).get("Market Capitalization") or 0, reverse=True)
+    offset = (max(1, page) - 1) * limit
+    data = {
+        "theme": key,
+        "description": theme["description"],
+        "universe": sources,
+        "universe_size": len(universe),
+        "filters": theme["filters"],
+        "total_matches": len(matched),
+        "page": page,
+        "sorted_by": "Market Capitalization (desc)",
+    }
+    if excluded:
+        data["excluded_for_data_quality"] = excluded[:25]
+        warnings.append(f"Excluded {len(excluded)} result(s) with implausible numbers (see excluded_for_data_quality).")
+    rows = matched[offset:offset + limit]
+    if not rows:
+        warnings.append(f"No companies in the {len(universe)}-company universe passed the filters on page {page}.")
+    data.update({"showing": len(rows), "results": rows})
+    return ToolResult(data=data, warnings=warnings)
+
+
+async def screen_by_theme(theme: str, limit: int = 20, page: int = 1) -> ToolResult:
+    """Run a pre-built theme (see THEMES / theme_catalog for the criteria)."""
+    key = _match_theme(theme)
+    if not key:
         raise ToolError(
             f"Theme '{theme}' not recognized.",
             "invalid_input",
-            available_themes=THEME_DESCRIPTIONS,
+            available_themes={k: t["description"] for k, t in THEMES.items()},
         )
-
-    query = QUERY_TEMPLATES[theme_key]
-    result = await screen_stocks(query, limit=limit)
-    result.data = {"theme": theme_key, "description": THEME_DESCRIPTIONS[theme_key], **result.data}
+    t = THEMES[key]
+    limit = max(1, min(int(limit or 20), 200))
+    page = max(1, int(page or 1))
+    if "universe" in t:
+        return await _sector_screen(key, t, limit, page)
+    result = await screen_stocks(t["query"], limit=limit, page=page)
+    result.data = {"theme": key, "description": t["description"], **result.data}
     return result
 
 
-async def list_themes() -> str:
-    """List all available pre-built screening themes."""
-    lines = ["## Available Investment Themes", ""]
-    for key, desc in THEME_DESCRIPTIONS.items():
-        q = QUERY_TEMPLATES[key]
-        lines.append(f"### `{key}`")
-        lines.append(f"{desc}")
-        lines.append(f"```\n{q}\n```")
-        lines.append("")
-    return "\n".join(lines)
-
-
 def _match_theme(theme: str) -> Optional[str]:
-    """Fuzzy match a theme name to a template key."""
-    theme_lower = theme.lower().replace(" ", "_").replace("-", "_")
-    if theme_lower in QUERY_TEMPLATES:
+    """Fuzzy match a theme name to a theme key."""
+    theme_lower = theme.lower().strip().replace(" ", "_").replace("-", "_")
+    theme_lower = {"defence": "defense", "ev": "ev_theme", "renewables": "renewable_energy",
+                   "railway": "railways"}.get(theme_lower, theme_lower)
+    if theme_lower in THEMES:
         return theme_lower
-    for key in QUERY_TEMPLATES:
+    for key in THEMES:
         if theme_lower in key or key in theme_lower:
             return key
-    # Partial word match
     words = set(theme_lower.split("_"))
-    for key in QUERY_TEMPLATES:
-        key_words = set(key.split("_"))
-        if words & key_words:
+    for key in THEMES:
+        if words & set(key.split("_")):
             return key
     return None

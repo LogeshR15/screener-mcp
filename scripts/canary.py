@@ -78,6 +78,10 @@ async def financial_tables():
     ratios = _ok(await server.get_financials("TCS", "ratios"), "ratios")
     labels = {r["label"] for r in ratios.get("rows", [])}
     _check({"Debtor Days", "ROCE %"} <= labels, f"ratios rows changed: {sorted(labels)}")
+    _check({"ROE %", "P/E (year-end)", "P/B (year-end)"} <= labels,
+           f"computed ratio rows missing (chart API or balance sheet changed?): {sorted(labels)}")
+    _check("TTM" not in pl["years"] and pl.get("ttm"), "TTM column no longer split from fiscal years")
+    _check(not any(r["label"].endswith("+") for r in pl["rows"]), "row labels carry '+' again")
     env = await server.get_quarterly_results("TCS")
     q = _ok(env, "quarterly results")
     _check(env["status"] == "ok" and q.get("quarters"), f"quarterly results {env['status']}: {env.get('reason')}")
@@ -144,13 +148,32 @@ async def moat_signals():
     _check(d["durability"].get("roce"), "ROCE history not parsed")
 
 
+async def shareholding_and_pledge():
+    itc = _ok(await server.get_shareholding_pattern("ITC"), "ITC shareholding")
+    _check(itc["promoter_group"]["present"] is False and itc["pledge"]["status"] == "not_applicable",
+           f"ITC (no promoter) misread: {itc.get('promoter_group')}, {itc.get('pledge')}")
+    # Pledges are read from Screener's cons list; WEBELSOLAR's promoters had ~89% pledged in Sep 2026.
+    ws = _ok(await server.get_shareholding_pattern("WEBELSOLAR"), "WEBELSOLAR shareholding")
+    _check(ws["pledge"]["status"] == "reported",
+           f"promoter pledge no longer found on the page (cons list changed, or pledge released?): {ws['pledge']}")
+
+
+async def sector_theme():
+    d = _ok(await server.screen_by_theme("defense", limit=5), "defense theme")
+    _check(d["universe_size"] >= 20 and all(u["companies"] for u in d["universe"]),
+           f"defense universe (index / industry pages) not parsed: {d.get('universe')}")
+    _check("HAL" in [r["symbol"] for r in d["results"]] or d["total_matches"] > 0,
+           f"defense theme returned nothing plausible: {d['results']}")
+
+
 async def forward_outlook():
     d = _ok(await server.get_forward_outlook("BEL", include_earnings_call=False), "forward outlook")
     _check(d.get("analyst_estimates") and d["analyst_estimates"]["years"], "no BEL analyst estimates")
 
 
 HARD = [overview_consolidated, overview_standalone_fallback, financial_tables, symbol_resolution,
-        technical_screen, sector_compare, peers, relative_valuation, moat_signals]
+        technical_screen, sector_compare, peers, relative_valuation, moat_signals, shareholding_and_pledge,
+        sector_theme]
 SOFT = [nse_announcements, news_feed, analyst_consensus, forward_outlook]  # third-party feeds: warn, don't fail
 
 

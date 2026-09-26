@@ -160,7 +160,7 @@ class NSEClient:
     # fire one request per calendar day (NSE just returns [] for non-trading
     # days) and merge the results. Capped so a `days=365` request can't turn
     # into 365 serial round-trips to a third-party site.
-    MAX_BULK_DEAL_DAYS = 30
+    MAX_BULK_DEAL_DAYS = 90
 
     async def get_bulk_deals(
         self, from_date: str, to_date: str, symbol: str = None
@@ -245,6 +245,23 @@ class NSEClient:
 
         await self._ensure_session()
         return await asyncio.gather(*[_fetch_detail(f) for f in filings])
+
+    async def get_insider_trades(self, symbol: str, days: int = 365) -> list[dict]:
+        """Structured PIT trades from `/api/corporates-pit` for the last `days`.
+
+        This endpoint carries the trade fields inline (no XBRL download) and
+        covers disclosures the newer `corporates-pit-gg` feed doesn't list —
+        but without a date range it returns a stale default page, so the range
+        is always sent.
+        """
+        end = datetime.now()
+        start = end - timedelta(days=days)
+        data = await self.get_json(
+            "/api/corporates-pit",
+            params={"index": "equities", "symbol": symbol.upper(),
+                    "from_date": start.strftime("%d-%m-%Y"), "to_date": end.strftime("%d-%m-%Y")},
+        )
+        return data.get("data", []) if isinstance(data, dict) else (data or [])
 
     async def close(self):
         if self._client:

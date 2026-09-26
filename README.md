@@ -46,7 +46,7 @@ This installs the full server, including document analysis (annual reports, earn
 claude mcp add screener -s user -- uvx screener-mcp
 ```
 
-> **Core vs. `[ai]`:** the base package covers company data, screening, NSE announcements, and portfolio tracking. The `[ai]` extra adds `pdfplumber`, `chromadb`, and `sentence-transformers` (~1–2GB, via torch) to power `analyze_annual_report`, `analyze_earnings_call`, `ask_company_research`, and `search_market_commentary`. Without it, those four tools return a "not installed" error — everything else works normally.
+> **Core vs. `[ai]`:** the base package covers company data, screening, NSE announcements, and portfolio tracking. The `[ai]` extra adds `pdfplumber`, `chromadb`, and `sentence-transformers` (~1–2GB, via torch) to power `ask_company_research` and `search_market_commentary` (and the management-guidance part of `get_forward_outlook`). Without it, those tools return a "not installed" error — everything else works normally.
 
 Using Claude Desktop instead of Claude Code? See [Claude Desktop setup](#claude-desktop).
 
@@ -64,7 +64,7 @@ Then try a few prompts in Claude:
 ```
 "Search for Asian Paints"
 "Give me the company overview for TCS"
-"List the pre-built screening themes"
+"Run the defense theme screen"
 ```
 
 If these return real data, the server is working end to end.
@@ -73,17 +73,17 @@ If these return real data, the server is working end to end.
 
 ## What it provides
 
-- **Company research** — financials, ratios, shareholding, peer comparison, red-flag detection (no login required)
-- **Stock screening** — custom Screener.in-style queries with `AND` / `OR` / parentheses, pre-built thematic screens, and technical clauses (52-week distance, RSI, DMA, volume spikes). Junk rows are filtered out by default. Fundamental screens need a free Screener.in login; technical-only screens don't
+- **Company research** — financials (incl. year-end P/E, P/B, ROE and debt-to-equity history), shareholding trends with promoter/pledge assessment, peer comparison, rule-based red-flag checks (no login required)
+- **Stock screening** — custom Screener.in-style queries with `AND` / `OR` / parentheses, pre-built thematic screens (sector themes start from the companies actually in the sector), and technical clauses (52-week distance, RSI, DMA, volume spikes). Junk rows are filtered out by default. Fundamental screens need a free Screener.in login; technical-only screens don't
 - **Price-action context** — quality stocks near 52-week lows in one call, and a stock's move vs its sector index and the Nifty 50
 - **Valuation & quality context** — P/E and ROCE vs the industry median for up to 20 stocks at once, and moat proxies: revenue share, rank, industry concentration, and how durable returns and margins have been
 - **Forward-looking & Street view** — analyst EPS/revenue estimates and target prices, order wins and capex filings, management guidance from earnings calls, and recent news
 - **Document analysis** — ask questions over annual reports and earnings call transcripts using a local RAG pipeline
-- **Corporate events** — NSE announcements, bulk deals, insider trading disclosures, promoter pledge trends, credit ratings
+- **Corporate events** — NSE announcements (incl. credit and ESG rating actions), bulk deals by company or investor, insider trading disclosures
 - **Market & research** — commodity price context, local research notes
 - **Portfolio** — a private, local holdings tracker with live P&L
 
-38 tools in total — full reference [below](#tools--38-total). Every tool returns the same [response envelope](#response-envelope), so partial or degraded data is always explicit.
+30 tools in total — full reference [below](#tools--30-total). Every tool returns the same [response envelope](#response-envelope), so partial or degraded data is always explicit.
 
 ---
 
@@ -97,11 +97,12 @@ If these return real data, the server is working end to end.
 - **Is it cheap for its sector?** — `"Which of these 15 stocks trade below their industry P/E?"` → `get_relative_valuation`, or `screen_stocks(..., peer_relative=True)`
 - **Moat check** — `"Is MSUMI a market leader with durable returns?"` → `get_moat_signals`
 - **Future growth** — `"What's the order pipeline and guidance for BEL?"` → `get_forward_outlook`
-- **Read an annual report** — `"What are the key risks in Reliance's 2024 annual report?"` → `analyze_annual_report`
-- **Read an earnings call** — `"What did TCS say about margins in Q3FY25?"` → `analyze_earnings_call`
+- **Read an annual report** — `"What are the key risks in Reliance's 2024 annual report?"` → `ask_company_research(..., year=2024)`
+- **Read an earnings call** — `"What did TCS say about margins in Q3FY25?"` → `ask_company_research(..., quarter="Q3FY25")`
+- **Across years** — `"How has ITC described cigarette taxation over the years?"` → `ask_company_research(..., doc_type="annual_report")`
 - **Spot red flags** — `"What are the red flags in Asian Paints?"` → `analyze_red_flags`
 - **Track NSE activity** — `"Show recent announcements for HDFCBANK"` → `get_company_announcements`
-- **Research bulk deals** — `"Any recent bulk deals in TITAN?"` → `get_bulk_deals`
+- **Research bulk deals** — `"Any recent bulk deals in TITAN?"` → `get_bulk_deals("TITAN")`; `"What has SBI Mutual Fund bought in bulk?"` → `get_bulk_deals(name="SBI Mutual Fund")`
 - **Track a portfolio** — `"Add 10 shares of INFY at ₹1500 to my portfolio"` → `add_portfolio_stock`
 - **Save research** — `"Save a note on TITAN — strong Q3, watch margins"` → `notebook_ai`
 
@@ -184,7 +185,7 @@ Claude Desktop does **not** inherit your shell environment, so credentials must 
 
 **4.** Quit Claude Desktop completely (**Cmd+Q** on macOS) and reopen it.
 
-**5.** Check the tools icon in the message composer — `screener` should list its 38 tools. Then ask: `"Search for Asian Paints"`.
+**5.** Check the tools icon in the message composer — `screener` should list its 30 tools. Then ask: `"Search for Asian Paints"`.
 
 > Server not showing up? Check **Settings → Developer** for its status, and the logs at `~/Library/Application Support/Claude/logs/mcp-server-screener.log` (macOS) or `%APPDATA%\Claude\logs\` (Windows). Invalid JSON — often a stray trailing comma — makes Claude Desktop skip every server silently.
 
@@ -271,7 +272,7 @@ Never commit real credentials — the values above are placeholders.
 
 ---
 
-## Tools — 38 total
+## Tools — 30 total
 
 Grouped by category. See [Example workflows](#example-workflows) for the ones you'll reach for most.
 
@@ -280,16 +281,14 @@ Grouped by category. See [Example workflows](#example-workflows) for the ones yo
 | Tool | What it does | Login needed |
 |------|-------------|:---:|
 | `search_company` | Find company by name or symbol | No |
-| `get_company_overview` | Key ratios, price, 52W range, about | No |
-| `get_financials` | P&L / Balance Sheet / Cash Flow / Ratios | No |
+| `get_company_overview` | Key ratios, price, 52W range, NSE/BSE codes, about, Screener's pros/cons | No |
+| `get_financials` | P&L (TTM separate) / Balance Sheet / Cash Flow / Ratios incl. year-end P/E, P/B, ROE, debt-to-equity | No |
 | `get_quarterly_results` | Last 8 quarters of results | No |
-| `get_shareholding_pattern` | Promoter / FII / DII holding trend | No |
+| `get_shareholding_pattern` | 8-quarter holding trends per category, promoter-group detection, promoter pledge | No |
 | `get_peer_comparison` | Sector peer comparison table | No |
-| `compare_companies` | Side-by-side comparison (2–5 stocks) | No |
-| `compare_stocks_ui` | Interactive comparison dashboard (MCP App); plain JSON in other hosts | No |
-| `get_full_analysis` | All data combined for deep analysis | No |
-| `analyze_red_flags` | Structured red flag detection | No |
-| `explain_for_beginners` | Plain-language company explainer | No |
+| `compare_companies` | 2–6 stocks side by side, with point-in-time red flags; interactive dashboard (MCP App) where supported, JSON everywhere | No |
+| `get_full_analysis` | All data combined for deep analysis (same windows as the standalone tools) | No |
+| `analyze_red_flags` | Rule-based red-flag checks over the full history, each with evidence and thresholds | No |
 
 ### Stock Screening
 
@@ -299,31 +298,25 @@ Grouped by category. See [Example workflows](#example-workflows) for the ones yo
 | `get_52_week_low_candidates` | Quality filters + proximity to 52-week low, with overview fields per match | No |
 | `get_relative_valuation` | P/E and ROCE vs the industry median for up to 20 stocks at once | No |
 | `compare_to_sector` | Stock's return vs its sector index and Nifty 50, with a market-vs-company verdict | No |
-| `screen_by_theme` | Pre-built thematic screens | Yes |
-| `list_investment_themes` | Show all available themes | No |
+| `screen_by_theme` | Pre-built thematic screens — every theme's criteria are in the tool description | Query themes only |
 
 ### Document Analysis
 
 | Tool | What it does | Extra deps needed |
 |------|-------------|:---:|
 | `get_document_list` | List annual reports & earnings call transcripts | No |
-| `analyze_annual_report` | Ask any question over one annual report PDF | Yes |
-| `analyze_earnings_call` | Ask any question over one earnings call transcript | Yes |
-| `ask_company_research` | Ask a question across ALL of a company's cached documents at once (multiple years/quarters) | Yes |
+| `ask_company_research` | Ask a question over a company's annual reports and earnings calls — all recent ones, one `doc_type`, or one document (`year` / `quarter` / `pdf_url`) | Yes |
 | `search_market_commentary` | Search a question across multiple companies' already-indexed documents at once | Yes |
 
-> `ask_company_research` and `search_market_commentary` build on the same cache — the former indexes a company's recent documents and searches across them together (good for "how has X changed over time?"); the latter searches only what's *already* indexed across several symbols (good for "which of these companies mentioned Y?").
+> `ask_company_research` and `search_market_commentary` build on the same cache — the former indexes a company's documents and searches them (one or many); the latter searches only what's *already* indexed across several symbols (good for "which of these companies mentioned Y?").
 
 ### Corporate Events
 
 | Tool | What it does | Login needed |
 |------|-------------|:---:|
-| `get_company_announcements` | NSE corporate announcements with category filter | No |
-| `search_shareholder` | Find investor activity via NSE bulk deals | No |
-| `get_bulk_deals` | All NSE bulk deals for one company — no investor name needed | No |
-| `get_insider_trading` | SEBI PIT promoter/KMP/designated-person trade disclosures, no size threshold | No |
-| `get_promoter_pledge_history` | Dedicated promoter pledge % trend with severity flag | No |
-| `get_credit_ratings` | CRISIL/ICRA/CARE/India Ratings rating actions — a debt-quality check | No |
+| `get_company_announcements` | NSE corporate announcements with category filter — incl. `credit_rating` (CRISIL/ICRA/CARE/India Ratings) and `esg_rating` | No |
+| `get_bulk_deals` | NSE bulk deals by company (`symbol`), by investor (`name`), or both | No |
+| `get_insider_trading` | SEBI PIT promoter/KMP/designated-person trade disclosures, no size threshold (both NSE PIT feeds merged) | No |
 
 ### Market & Research
 
@@ -333,7 +326,7 @@ Grouped by category. See [Example workflows](#example-workflows) for the ones yo
 | `get_analyst_targets` | Consensus target price (mean/median/high/low, analyst count, rating split) + broker targets in recent headlines | No |
 | `get_forward_outlook` | Analyst EPS/revenue estimates, order wins and capex filings, management guidance from the latest earnings call | No (`[ai]` for guidance) |
 | `get_moat_signals` | Revenue share/rank and industry concentration (HHI), plus ROCE, margin and promoter-holding durability | No |
-| `get_commodity_prices` | Benchmark price, period moves, ≈INR price + impacted companies | No |
+| `get_commodity_prices` | International benchmark price, period moves, ≈INR price + exposed companies' symbols (incl. wheat; tobacco and wood pulp as exposure-only) | No |
 | `notebook_ai` | Save, read, and AI-summarize research notes locally | No |
 
 ### Portfolio
@@ -354,18 +347,21 @@ Grouped by category. See [Example workflows](#example-workflows) for the ones yo
 Document analysis (`[ai]` extra) uses a local RAG pipeline:
 
 ```
-analyze_annual_report("TCS", 2024, "What are the key risks?")
+ask_company_research("TCS", "What are the key risks?", year=2024)
 
   1. Fetch PDF link from Screener.in / NSE
-  2. Download and parse with pdfplumber
+  2. Download and parse with pdfplumber — two-column pages are split at the
+     gutter, rotated/mirrored decorative text is dropped
   3. Chunk into 500-word overlapping segments
   4. Embed with sentence-transformers (runs locally, no API key needed)
   5. Store in ChromaDB (~/.screener-mcp/chroma_db/)
-  6. Semantic search returns top-5 relevant excerpts
-  7. Claude reasons over the excerpts to answer your question
+  6. Semantic search, re-ranked: question keywords boosted, BRSR boilerplate
+     demoted (unless the question is about ESG), one hit per ~3-page window
+  7. Return the top excerpts, each trimmed to ~900 characters around the
+     question's terms, with document and page
 ```
 
-Results are cached — the same report isn't re-downloaded or re-processed. Each result's `data.document.freshness` reports `last_indexed_at`, the PDF's `content_sha256`, its `etag` / `last_modified`, and `source_changed` (a HEAD check against the live PDF; `null` when the server gives no validators). If a report was revised or refiled, pass `force_reindex=True` to rebuild the index. The manifest lives at `~/.screener-mcp/index_manifest.json`.
+Results are cached — the same report isn't re-downloaded or re-processed. Indexes built by an older version of the pipeline are rebuilt automatically on next use (from the cached PDF). Each document's `freshness` reports `last_indexed_at`, the PDF's `content_sha256`, its `etag` / `last_modified`, and `source_changed` (a HEAD check against the live PDF; `null` when the server gives no validators). If a report was revised or refiled, pass `force_reindex=True` to rebuild the index. The manifest lives at `~/.screener-mcp/index_manifest.json`.
 
 ---
 
@@ -373,23 +369,32 @@ Results are cached — the same report isn't re-downloaded or re-processed. Each
 
 ### Pre-built themes
 
+Query themes run a Screener query across the whole market:
+
 ```
-undervalued_small_cap       Small caps, ROCE > 15%, low debt, PE < 20
+undervalued_small_cap       Small caps < ₹5000 Cr, ROCE > 15%, low debt, P/E < 20
 high_roce_low_debt          ROCE > 20%, debt to equity < 0.3
 compounders                 15%+ growth: revenue, profit, ROE, ROCE
 turnaround                  Strong recent profit recovery
-rising_profit_falling_price Improving profits, compressed valuation
-improving_roce              ROCE > 15% with profit momentum
+rising_profit_falling_price Profit up 15%+/yr over 3 years, price down over 1 year, P/E < 15
+improving_roce              ROCE > 15% and above last year's and its 5-year average
 hidden_gems                 Small cap, high ROCE, strong growth
-dividend_aristocrats        Consistent dividends with quality financials
+dividend_aristocrats        Yield > 2%, dividend paid in each of the last 2 years, 3y payout > 20%
 qarp                        Quality at reasonable price
 micro_cap_growth            High-growth micro caps < ₹1000 Cr
-ev_theme                    EV & auto ancillary growth companies
-chemicals                   Specialty chemicals, strong fundamentals
-defense                     Defense sector with revenue momentum
-railways                    Railway infra/equipment companies
-renewable_energy            Renewable energy sector
 ```
+
+Sector themes start from the companies actually in the sector — Screener's query language has no industry field — then filter them:
+
+```
+defense                     Nifty India Defence + Aerospace & Defense and Shipbuilding industries
+ev_theme                    Nifty EV & New Age Automotive constituents
+chemicals                   Specialty Chemicals industry + Nifty Chemicals
+railways                    Railway Wagons industry + a curated list of railway PSUs/suppliers
+renewable_energy            Curated list of wind/solar makers and green power producers
+```
+
+Every result says which universe it came from (`data.universe`), and `screen_by_theme`'s description carries each theme's exact criteria. Both `screen_by_theme` and `screen_stocks` take `page` to go past the first page of results.
 
 ### Custom screen syntax
 
@@ -432,7 +437,7 @@ When `OR` groups contain no technical clauses, they go to Screener unchanged, si
 Screens sorted by growth used to fill up with tiny illiquid names showing one-off numbers. Two guards are now on by default:
 
 - **`min_market_cap`** (₹100 Cr) is added to the Screener query unless your query already has a `Market Capitalization` clause. Set it to `0` to turn it off.
-- **`exclude_flagged`** drops rows with implausible numbers and lists them under `excluded_for_data_quality`. The checks are: P/E below 1, a quarterly profit jump over 500% on a small base, quarterly profit above sales, negligible sales, and a price below ₹1. Set it to `False` to keep these rows, marked with `data_quality_flags`.
+- **`exclude_flagged`** drops rows with implausible numbers and lists them under `excluded_for_data_quality`. The checks are: P/E below 1, a quarterly profit jump over 500% on a small base, quarterly profit above sales, negligible sales, a price below ₹1, and a dividend yield above 25% (a special dividend or stale price). Set it to `False` to keep these rows, marked with `data_quality_flags`.
 
 Pass `peer_relative=True` to add each result's P/E and ROCE compared with its industry median.
 
@@ -533,7 +538,7 @@ Then point the client at `http://<host>:8000/mcp`.
 - For banks, NBFCs and insurers, debt-to-equity and working-capital-day checks are skipped because they aren't meaningful for lenders. Judge these companies on ROE, asset quality and capital adequacy
 - Document analysis requires machine-readable PDFs (scanned/image-only PDFs may fail)
 - NSE bulk deals only capture single trades > 0.5% of equity
-- The NSE-backed tools (`get_company_announcements`, `get_credit_ratings`, `get_insider_trading`, `get_bulk_deals`, `search_shareholder`) depend on NSE's public API, which often rate-limits or blocks server IPs. When that happens the tool returns `status: "error"` with `error.type: "upstream_unavailable"`. When only some bulk-deal days fail, it returns `partial`. An empty list with `status: "ok"` means NSE really had no rows. These tools resolve fuzzy symbols the same way as the Screener tools, and they return a `not_on_nse` error for companies listed only on BSE.
+- The NSE-backed tools (`get_company_announcements`, `get_insider_trading`, `get_bulk_deals`) depend on NSE's public API, which often rate-limits or blocks server IPs. When that happens the tool returns `status: "error"` with `error.type: "upstream_unavailable"`. When only some bulk-deal days fail, it returns `partial`. An empty list with `status: "ok"` means NSE really had no rows. These tools resolve fuzzy symbols the same way as the Screener tools, and they return a `not_on_nse` error for companies listed only on BSE.
 - This is a research tool — not financial advice
 
 ---
@@ -546,7 +551,7 @@ screener-mcp/
 ├── scripts/canary.py               # Daily live check against Screener.in (see .github/workflows/canary.yml)
 ├── tests/                          # Offline tests (no network) + a real-page fixture
 └── src/screener_mcp/
-    ├── server.py                   # FastMCP — all 38 tool definitions
+    ├── server.py                   # FastMCP — all 30 tool definitions
     ├── client.py                   # Screener.in HTTP client + auth
     ├── core/
     │   ├── envelope.py             # Standard response envelope for every tool
@@ -557,22 +562,24 @@ screener-mcp/
     │   ├── yahoo.py                # Yahoo Finance session (consensus targets, estimates)
     │   ├── industry.py             # Industry pages → medians, revenue share, HHI
     │   ├── nse_client.py           # NSE India API (announcements, filings)
+    │   ├── history.py              # Year-by-year series, computed ROE / debt-to-equity, CAGR
+    │   ├── valuation_history.py    # Year-end P/E and P/B from Screener's chart API
     │   ├── rag.py                  # PDF → chunk → embed → query pipeline
     │   └── vector_store.py         # ChromaDB wrapper
     ├── parsers/
     │   ├── company.py              # Screener.in company page parser
     │   └── screener.py             # Screen results parser
     ├── ui/
-    │   ├── stock_comparison.html   # compare_stocks_ui dashboard (MCP App)
+    │   ├── stock_comparison.html   # compare_companies dashboard (MCP App)
     │   └── ext-apps-app-with-deps.js  # vendored MCP Apps runtime (MIT)
     └── tools/
         ├── company_tools.py        # Company data tools
         ├── screening_tools.py      # Stock screening + themes
         ├── technical_tools.py      # Technical screens, 52W-low candidates, sector-relative
-        ├── analysis_tools.py       # Deep analysis, red flags, beginner
+        ├── analysis_tools.py       # Full analysis, rule-based red flags
         ├── documents.py            # Annual reports + earnings calls (RAG)
-        ├── announcements.py        # NSE corporate announcements + credit ratings
-        ├── shareholders.py         # Bulk deal / shareholder search
+        ├── announcements.py        # NSE corporate announcements (incl. credit/ESG ratings)
+        ├── shareholders.py         # NSE bulk deals (by company and/or investor)
         ├── insider_trading.py      # SEBI PIT insider trading disclosures
         ├── market_tools.py         # Recent news + analyst targets
         ├── research_tools.py       # Relative valuation, moat signals, forward outlook
