@@ -252,10 +252,12 @@ async def screen_stocks(
     try:
         if any(tech for _, tech in groups):
             merged: dict[str, dict] = {}
-            partial_reasons, stats = [], {"candidates_available": 0, "candidates_scanned": 0}
+            partial_reasons, per_group = [], []
             sources, filters = [], []
+            guard_used = False
             for gi, (fundamental, technical) in enumerate(groups, 1):
                 fund = fundamental + ([guard] if guard and fundamental else [])
+                guard_used = guard_used or bool(guard and fundamental)
                 res = await run_technical_screen(
                     fund, technical, universe=universe, limit=10_000,
                     max_candidates=max_candidates, sort_by=sort_by, order=order,
@@ -263,8 +265,8 @@ async def screen_stocks(
                 d = res.data
                 sources.append(d["source"])
                 filters.append(d["technical_filters"])
-                stats["candidates_available"] += d["candidates_available"] or 0
-                stats["candidates_scanned"] += d["candidates_scanned"]
+                per_group.append({"group": gi, "candidates_available": d["candidates_available"],
+                                  "candidates_scanned": d["candidates_scanned"], "matches": d.get("matches_found")})
                 for w in res.warnings:
                     if w not in warnings:
                         warnings.append(w)
@@ -276,13 +278,20 @@ async def screen_stocks(
             # Groups with no fundamental clauses scan an index universe (large caps
             # already), so the market-cap guard is only added to Screener-query groups.
             rows = list(merged.values())
+            # Groups over the same source scan the same stocks (price history is
+            # cached, so re-checking costs nothing) — don't double-count them.
+            same_source = all(src == sources[0] for src in sources)
+            agg = max if same_source else sum
             data = {
                 "query": query,
                 "or_groups": len(groups),
-                "source": sources[0] if len(sources) == 1 else sources,
+                "source": sources[0] if same_source else sources,
                 "technical_filters": filters[0] if len(filters) == 1 else filters,
-                **stats,
+                "candidates_available": agg((g["candidates_available"] or 0) for g in per_group),
+                "candidates_scanned": agg(g["candidates_scanned"] for g in per_group),
             }
+            if len(groups) > 1:
+                data["groups"] = per_group
             partial = bool(partial_reasons)
             reason = " ".join(partial_reasons) or None
         else:
@@ -292,6 +301,7 @@ async def screen_stocks(
                 query=screener_query, max_rows=limit + (25 if exclude_flagged else 0), sort=sort_by, order=order)
             data = {"query": query, "screener_query": screener_query, "total_matches": total}
             partial, reason = False, None
+            guard_used = bool(guard)
     except PermissionError:
         raise ToolError(
             _LOGIN_REQUIRED_MSG.format(query=query).strip(),
@@ -301,7 +311,7 @@ async def screen_stocks(
                  "login against an index universe such as nifty500.",
         )
 
-    if guard:
+    if guard_used:
         warnings.append(f"Added '{guard}' to filter out micro-caps — pass min_market_cap=0 to disable, "
                         "or put your own Market Capitalization clause in the query.")
     rows, excluded = _apply_hygiene(rows, exclude_flagged, min_market_cap if guard else 0)
@@ -316,11 +326,17 @@ async def screen_stocks(
     if peer_relative and rows:
         await _attach_peer_relative(rows, warnings)
     if not rows:
-        warnings.append(
-            "No companies matched. Screener query syntax uses field names like "
-            "`Market Capitalization`, `Return on capital employed`, `Debt to equity`, "
-            "`Profit growth 5Years`, `Price to Earning`."
-        )
+        if any(tech for _, tech in groups):
+            warnings.append(
+                f"No stocks passed the technical filters among the {data.get('candidates_scanned', 0)} scanned — "
+                "loosen the thresholds or try a wider universe."
+            )
+        else:
+            warnings.append(
+                "No companies matched. Screener query syntax uses field names like "
+                "`Market Capitalization`, `Return on capital employed`, `Debt to equity`, "
+                "`Profit growth 5Years`, `Price to Earning`."
+            )
     data.update({"showing": len(rows), "results": rows})
     return ToolResult(data=data, warnings=warnings, partial=partial, reason=reason)
 

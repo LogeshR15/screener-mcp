@@ -60,6 +60,7 @@ Run:
   or via Claude Code MCP config (see README).
 """
 
+import asyncio
 import httpx
 import os
 import re
@@ -125,13 +126,23 @@ from .tools.portfolio import (
     get_portfolio as _get_portfolio,
 )
 
+# Hard ceiling per tool call, so a hung upstream can't stall the conversation.
+_TOOL_TIMEOUT = float(os.getenv("SCREENER_TOOL_TIMEOUT", "240"))
+
+
 def _safe(result):
     """Wrap a tool implementation so it always returns the standard envelope
     (see core/envelope.py) and network/auth errors become structured errors."""
     import functools
     async def wrapper(*args, **kwargs):
         try:
-            return to_envelope(await result(*args, **kwargs))
+            return to_envelope(await asyncio.wait_for(result(*args, **kwargs), timeout=_TOOL_TIMEOUT))
+        except asyncio.TimeoutError:
+            return error_envelope(
+                f"Gave up after {_TOOL_TIMEOUT:.0f}s — the data source is slow or rate-limiting. Retry, or "
+                "narrow the request (smaller universe / max_candidates, include_earnings_call=False).",
+                "timeout",
+            )
         except ToolError as e:
             return error_envelope(e.message, e.error_type, **e.details)
         except NSEError as e:

@@ -12,6 +12,7 @@ list instead, so technical-only screens need no Screener login.
 
 import asyncio
 import re
+import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Optional
@@ -27,6 +28,9 @@ from ..parsers.company import debt_to_equity, parse_overview
 from ..parsers.screener import parse_screen_results
 
 DEFAULT_UNIVERSE = "nifty500"
+# Candidate lists are reused for a few minutes, e.g. across the OR groups of one screen.
+_CANDIDATE_TTL = 300
+_candidate_cache: dict[tuple, tuple[float, tuple]] = {}
 DEFAULT_MAX_CANDIDATES = 150
 MAX_CANDIDATES_CAP = 500
 
@@ -294,6 +298,10 @@ async def fetch_candidates(
     public. Pages come 25 rows at a time; after the first page the rest are
     fetched concurrently (the client caps concurrency and retries 429s).
     """
+    key = (query, index_slug, max_rows, sort, order)
+    hit = _candidate_cache.get(key)
+    if hit and time.monotonic() - hit[0] < _CANDIDATE_TTL:
+        return hit[1]
     client = await get_client()
 
     async def page(n: int) -> dict:
@@ -323,7 +331,9 @@ async def fetch_candidates(
         if cand and cand["company_id"] not in seen:
             seen.add(cand["company_id"])
             out.append(cand)
-    return out[:max_rows], total
+    result = (out[:max_rows], total)
+    _candidate_cache[key] = (time.monotonic(), result)
+    return result
 
 
 async def _technicals_for(cands: list[dict]) -> tuple[dict[str, dict], dict[str, list[str]], list[str]]:
