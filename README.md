@@ -67,7 +67,7 @@ Then try a few prompts in Claude:
 "Run the defense theme screen"
 ```
 
-If these return real data, the server is working end to end.
+If these return real data, the server is working end to end. You can also run `screener-mcp --selfcheck` in a terminal: it checks the core tools against live Screener.in and prints request metrics (requests, retries, rate-limit hits, cache hit rate).
 
 ---
 
@@ -533,7 +533,7 @@ Then point the client at `http://<host>:8000/mcp`.
 | [Google News](https://news.google.com) RSS | Recent headlines, including broker target-price mentions |
 
 - Financial data lags by ~1 quarter
-- Screener.in rate-limits bursts. The client paces requests (`SCREENER_MIN_INTERVAL`, default 0.25s) and caps concurrency (`SCREENER_MAX_CONCURRENCY`, default 3). Any 429 pauses all requests for a shared cooldown, and requests are then retried. Price history is cached in `~/.screener-mcp/price_cache`: during market hours for 15 minutes, otherwise until the next session. A cold technical screen can take a minute; repeat screens are fast. Set `SCREENER_PRICE_CACHE=0` to disable the cache
+- Screener.in rate-limits bursts. The client paces requests (`SCREENER_MIN_INTERVAL`, default 0.25s) and caps concurrency (`SCREENER_MAX_CONCURRENCY`, default 3). Any 429 pauses all requests for a shared cooldown, and requests are then retried. Price history is cached in `~/.screener-mcp/price_cache`: during market hours for 15 minutes, otherwise until the next session. A cold technical screen can take a minute; repeat screens are fast. Identical requests in flight at the same time share one HTTP call. Set `SCREENER_PRICE_CACHE=0` to disable the cache
 - Commodity prices are the international benchmarks MCX contracts track. The INR figure is a plain FX conversion, before import duty and GST, so it's below the MCX quote. Nickel has no free feed and returns `partial`
 - `get_company_overview` returns `data.price_freshness`: `price_as_of`, whether the price is an intraday print or the last close, the previous close and the day's change. A price older than a few days is flagged as stale
 - Analyst targets come from two sources that cover different brokers and dates, so they won't match: Yahoo Finance's consensus and targets extracted from recent headlines. Treat either as one view, not the market's

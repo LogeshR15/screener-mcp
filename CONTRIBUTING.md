@@ -275,6 +275,13 @@ Operators: `>` `<` `=` `AND`
 
 ---
 
+## When Screener changes a page
+
+The live canary (`scripts/canary.py`) fails first. Run `python scripts/refresh_fixtures.py`, read the
+diff in `tests/fixtures/` — that is what Screener changed — and fix the parser or theme filters until
+`pytest` passes (`tests/test_contract.py` checks every sector theme's filter columns against the recorded
+industry page). `screener-mcp --selfcheck` runs a quick end-to-end check and prints request metrics.
+
 ## Submitting a PR
 
 1. Fork the repo and create a branch: `git checkout -b feat/my-tool`
