@@ -178,13 +178,14 @@ Screener's query language has no industry field, so a sector can't be a
 query. Universe sources are `("index", <key in core/indices.py>)`,
 `("industry", "/market/…/")` (the Industry link on any company page) and
 `("symbols", [...])` for a curated list. Filters may only use columns those
-pages carry — see the comment above `THEMES`:
+pages carry — see the comment above `THEMES` (the logged-out default has market cap, P/E, ROCE and
+quarterly growth, but no ROE or 5-year growth; the canary fails if a filter column disappears):
 
 ```python
     "cement": {
-        "description": "Cement makers with ROE > 12%",
+        "description": "Cement makers with ROCE > 12%",
         "universe": [("industry", "/market/IN01/IN0102/IN010203/IN010203001/")],  # Cement & Cement Products
-        "filters": "Market Capitalization > 1000 AND Return on equity > 12",
+        "filters": "Market Capitalization > 1000 AND Return on capital employed > 12",
     },
 ```
 

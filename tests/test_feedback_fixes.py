@@ -241,6 +241,17 @@ async def test_sector_theme_screens_its_universe(monkeypatch):
     assert d["universe_size"] == 4 and d["universe"][0]["type"] == "nse_index"
 
 
+async def test_sector_theme_reports_a_column_missing_for_the_whole_universe(monkeypatch):
+    async def fake_fetch(query=None, index_slug=None, max_rows=0, sort="", order="", page_path=None):
+        row = lambda s: {"symbol": s, "name": s, "company_id": s, "fundamentals": {"Market Capitalization": 9000}}
+        return [row("A"), row("B")], 2
+
+    monkeypatch.setattr(st, "fetch_candidates", fake_fetch)
+    env = await server.screen_by_theme("defense", limit=5)
+    assert env["status"] == "partial" and env["data"]["unavailable_filter_fields"] == ["Return on capital employed"]
+    assert "could not be filtered" in env["reason"]
+
+
 def test_dividend_yield_spike_is_flagged():
     assert any("dividend yield" in f for f in st.sanity_flags({"Dividend yield": 458, "Price to Earning": 0.14}))
 

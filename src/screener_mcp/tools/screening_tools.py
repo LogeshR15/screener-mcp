@@ -447,6 +447,9 @@ async def _sector_screen(key: str, theme: dict, limit: int, page: int) -> ToolRe
     if missing_counts:
         warnings.append("Excluded for lacking a filter field on the source page: "
                         + ", ".join(f"{n} without {f}" for f, n in missing_counts.items()) + ".")
+    # A column absent for every company means Screener's page layout changed, not that
+    # nothing qualifies — say so instead of returning an unexplained empty result.
+    unavailable = [f for f, n in missing_counts.items() if universe and n == len(universe)]
     matched, excluded = _apply_hygiene(matched, exclude_flagged=True)
     matched.sort(key=lambda r: (r.get("fundamentals") or {}).get("Market Capitalization") or 0, reverse=True)
     offset = (max(1, page) - 1) * limit
@@ -467,6 +470,12 @@ async def _sector_screen(key: str, theme: dict, limit: int, page: int) -> ToolRe
     if not rows:
         warnings.append(f"No companies in the {len(universe)}-company universe passed the filters on page {page}.")
     data.update({"showing": len(rows), "results": rows})
+    if unavailable:
+        data["unavailable_filter_fields"] = unavailable
+        reason = (f"Screener's source pages no longer carry {', '.join(unavailable)} for any company in the "
+                  f"universe, so the {key} theme could not be filtered — an empty result here does not mean "
+                  "nothing qualifies.")
+        return ToolResult(data=data, warnings=warnings, partial=True, reason=reason)
     return ToolResult(data=data, warnings=warnings)
 
 
