@@ -224,9 +224,9 @@ def test_rising_profit_falling_price_has_a_price_condition():
 
 
 async def test_sector_theme_screens_its_universe(monkeypatch):
-    def cand(sym, mcap, roe, growth=20):
+    def cand(sym, mcap, roe):
         return {"symbol": sym, "name": sym, "company_id": sym,
-                "fundamentals": {"Market Capitalization": mcap, "Return on equity": roe, "Profit growth 5Years": growth,
+                "fundamentals": {"Market Capitalization": mcap, "Return on capital employed": roe,
                                  "Price to Earning": 30}}
 
     async def fake_fetch(query=None, index_slug=None, max_rows=0, sort="", order="", page_path=None):
