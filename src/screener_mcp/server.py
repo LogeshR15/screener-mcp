@@ -56,6 +56,7 @@ import asyncio
 import httpx
 import os
 import re
+import sys
 from pathlib import Path
 from mcp.server.fastmcp import FastMCP
 from .core.envelope import ToolError, ToolResult, error_envelope, to_envelope
@@ -1139,7 +1140,35 @@ async def health_check(request):
 
 # ─── Entry point ──────────────────────────────────────────────────────────────
 
+async def _selfcheck() -> int:
+    """Quick end-to-end check a user can run after install: is Screener reachable, do the
+    core parsers still understand its pages, and how is the client behaving."""
+    import json
+    import time
+
+    from .core import metrics
+
+    checks = [
+        ("overview (TCS)", lambda: get_company_overview("TCS")),
+        ("shareholding (ITC)", lambda: get_shareholding_pattern("ITC")),
+        ("sector theme (defense)", lambda: screen_by_theme("defense", limit=3)),
+    ]
+    failed = 0
+    for name, call in checks:
+        started = time.monotonic()
+        env = await call()
+        took = time.monotonic() - started
+        good = env["status"] == "ok"
+        failed += not good
+        detail = "" if good else f" — {env.get('reason') or env.get('error', {}).get('message')}"
+        print(f"{'PASS' if good else 'FAIL'}  {name}  ({took:.1f}s){detail}")
+    print("metrics:", json.dumps(metrics.snapshot()))
+    return 1 if failed else 0
+
+
 def main():
+    if "--selfcheck" in sys.argv[1:]:
+        raise SystemExit(asyncio.run(_selfcheck()))
     # MCP_TRANSPORT=streamable-http to run as a network server (for remote
     # MCP clients that need an HTTP server URL) instead of the default stdio
     # mode used by claude mcp add / local desktop clients.

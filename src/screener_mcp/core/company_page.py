@@ -28,6 +28,7 @@ import httpx
 from bs4 import BeautifulSoup
 
 from ..client import get_client
+from . import metrics
 from .envelope import ToolError
 
 FINANCIAL_TYPES = ("consolidated", "standalone")
@@ -284,7 +285,9 @@ async def _get_page(symbol: str, financial_type: str) -> Optional[str]:
     now = time.monotonic()
     hit = _page_cache.get(path)
     if hit and now - hit[0] < _PAGE_CACHE_TTL:
+        metrics.incr("page_cache_hits")
         return hit[1]
+    metrics.incr("page_cache_misses")
     client = await get_client()
     try:
         html = await client.get_html(path)

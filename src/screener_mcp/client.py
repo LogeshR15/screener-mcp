@@ -12,11 +12,14 @@ import os
 import asyncio
 import logging
 import random
+import time
 from typing import Optional
 from urllib.parse import urljoin
 
 import httpx
 from bs4 import BeautifulSoup
+
+from .core import metrics
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +56,7 @@ class ScreenerClient:
         self._pace_lock = asyncio.Lock()
         self._next_slot = 0.0       # monotonic time the next request may start
         self._cooldown_until = 0.0  # set by any 429 — pauses *all* requests
+        self._inflight: dict[tuple, asyncio.Future] = {}  # identical GETs in flight share one request
 
     @property
     def logged_in(self) -> bool:
@@ -81,15 +85,22 @@ class ScreenerClient:
         for attempt in range(_MAX_RETRIES + 1):
             async with self._semaphore:
                 await self._wait_turn()
+                started = time.monotonic()
                 try:
                     resp = await self._client.get(url, **kwargs)
                 except _RETRYABLE_TRANSPORT:
                     if attempt == _MAX_RETRIES:
                         raise
+                    metrics.incr("retries")
                     self._cool_down(2 ** attempt)
                     continue
+                finally:
+                    metrics.incr("http_requests")
+                    metrics.observe_latency(time.monotonic() - started)
             if resp.status_code not in (429, 503) or attempt == _MAX_RETRIES:
                 return resp
+            metrics.incr("rate_limited" if resp.status_code == 429 else "unavailable_503")
+            metrics.incr("retries")
             retry_after = resp.headers.get("Retry-After", "")
             delay = float(retry_after) if retry_after.isdigit() else 2 ** (attempt + 1)
             self._cool_down(min(delay, 60) + random.uniform(0, 1))
@@ -152,6 +163,10 @@ class ScreenerClient:
     async def get_html(self, path: str, params: Optional[dict] = None) -> str:
         """Fetch an HTML page from Screener.in."""
         url = urljoin(BASE_URL, path)
+        key = ("html", url, tuple(sorted((params or {}).items())))
+        return await self._coalesce(key, lambda: self._fetch_html(url, params))
+
+    async def _fetch_html(self, url: str, params: Optional[dict]) -> str:
         resp = await self._get(url, params=params or {})
         resp.raise_for_status()
         # Detect silent redirect to login/register page
@@ -162,6 +177,19 @@ class ScreenerClient:
                 "Set SCREENER_USERNAME and SCREENER_PASSWORD environment variables."
             )
         return resp.text
+
+    async def _coalesce(self, key: tuple, factory):
+        """Concurrent callers asking for the same URL share one request (fan-out tools
+        such as peers / comparisons / themes often want the same page at once). The
+        entry lives only while the request is in flight — this is not a cache."""
+        running = self._inflight.get(key)
+        if running is not None:
+            metrics.incr("coalesced_requests")
+            return await asyncio.shield(running)
+        task = asyncio.ensure_future(factory())
+        self._inflight[key] = task
+        task.add_done_callback(lambda t: (self._inflight.pop(key, None), t.exception() if not t.cancelled() else None))
+        return await asyncio.shield(task)
 
     async def get_json(self, path: str, params: Optional[dict] = None) -> dict | list:
         """Fetch a JSON endpoint from Screener.in."""
@@ -176,6 +204,7 @@ class ScreenerClient:
         return resp.json()
 
     async def close(self):
+        logger.debug("request metrics: %s", metrics.snapshot())
         if self._client:
             await self._client.aclose()
             self._client = None
