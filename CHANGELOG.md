@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+- **Sector themes returned nothing.** Screener's logged-out market tables no
+  longer carry ROE or 5-year profit growth, so every sector theme filtering on
+  them excluded the whole universe. Sector themes (`defense`, `ev_theme`,
+  `chemicals`, `railways`, `renewable_energy`) now filter on ROCE.
+- A filter column missing for the whole universe now returns a `partial`
+  result with `unavailable_filter_fields` instead of an unexplained empty list.
+
+### Changed
+- Live canary: the live-pledge check is a soft warning (the parser is covered
+  offline), uses JPPOWER, and `sector_theme` fails if a filter column vanishes.
+  Workflows moved to Node 24 action versions and `ubuntu-24.04`.
+
 ## 0.5.0 — 2026-09-26
 
 Fixes from a full real-user test pass, and a consolidation of the tool

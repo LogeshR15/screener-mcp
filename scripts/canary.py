@@ -152,17 +152,24 @@ async def shareholding_and_pledge():
     itc = _ok(await server.get_shareholding_pattern("ITC"), "ITC shareholding")
     _check(itc["promoter_group"]["present"] is False and itc["pledge"]["status"] == "not_applicable",
            f"ITC (no promoter) misread: {itc.get('promoter_group')}, {itc.get('pledge')}")
-    # Pledges are read from Screener's cons list; JPPOWER's promoters had ~73% pledged in Oct 2026
-    # (WEBELSOLAR released its pledge in Sep 2026 — if this one is released too, pick another).
+
+
+async def live_pledge():
+    # Soft check: the pledge parser itself is covered offline (tests/test_feedback_fixes.py); this
+    # only confirms the live page wording still matches. A pledged company can release its pledge
+    # (WEBELSOLAR did in Sep 2026), so a failure here means "check the wording, or pick another company".
     ws = _ok(await server.get_shareholding_pattern("JPPOWER"), "JPPOWER shareholding")
     _check(ws["pledge"]["status"] == "reported",
-           f"promoter pledge no longer found on the page (cons list changed, or pledge released?): {ws['pledge']}")
+           f"JPPOWER promoter pledge not found (cons wording changed, or pledge released?): {ws['pledge']}")
 
 
 async def sector_theme():
     d = _ok(await server.screen_by_theme("defense", limit=5), "defense theme")
     _check(d["universe_size"] >= 20 and all(u["companies"] for u in d["universe"]),
            f"defense universe (index / industry pages) not parsed: {d.get('universe')}")
+    _check(not d.get("unavailable_filter_fields"),
+           f"Screener's industry/index pages dropped a column the theme filters on: {d.get('unavailable_filter_fields')}"
+           f" (layout change — update the theme filters in screening_tools.py)")
     _check("HAL" in [r["symbol"] for r in d["results"]] or d["total_matches"] > 0,
            f"defense theme returned nothing plausible: {d['results']}")
 
@@ -175,7 +182,7 @@ async def forward_outlook():
 HARD = [overview_consolidated, overview_standalone_fallback, financial_tables, symbol_resolution,
         technical_screen, sector_compare, peers, relative_valuation, moat_signals, shareholding_and_pledge,
         sector_theme]
-SOFT = [nse_announcements, news_feed, analyst_consensus, forward_outlook]  # third-party feeds: warn, don't fail
+SOFT = [live_pledge, nse_announcements, news_feed, analyst_consensus, forward_outlook]  # warn, don't fail
 
 
 async def main() -> int:
@@ -203,7 +210,7 @@ async def main() -> int:
         with open(report, "w") as f:
             f.write("\n".join(f"- **{n}**: {d}" for n, d in failures) or "all checks passed")
             if soft_failures:
-                f.write("\n\nSoft (NSE) warnings:\n" + "\n".join(f"- {n}: {d}" for n, d in soft_failures))
+                f.write("\n\nSoft warnings:\n" + "\n".join(f"- {n}: {d}" for n, d in soft_failures))
     print(json.dumps(summary))
     return 1 if failures else 0
 

@@ -394,6 +394,8 @@ railways                    Railway Wagons industry + a curated list of railway 
 renewable_energy            Curated list of wind/solar makers and green power producers
 ```
 
+Sector themes filter on market cap and ROCE (Screener's market pages don't carry ROE or 5-year growth by default). If Screener drops a column the filters need, the tool returns a `partial` result naming it rather than an empty list.
+
 Every result says which universe it came from (`data.universe`), and `screen_by_theme`'s description carries each theme's exact criteria. Both `screen_by_theme` and `screen_stocks` take `page` to go past the first page of results.
 
 ### Custom screen syntax
