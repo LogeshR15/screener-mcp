@@ -10,6 +10,18 @@
 - A filter column missing for the whole universe now returns a `partial`
   result with `unavailable_filter_fields` instead of an unexplained empty list.
 
+### Added
+- **Request coalescing:** concurrent identical Screener requests (peers,
+  comparisons and sector screens often want the same page at once) now share
+  one HTTP call.
+- **Request metrics** (requests, retries, 429s, coalesced calls, page-cache hit
+  rate, average latency) and `screener-mcp --selfcheck`, a quick post-install
+  check that prints them.
+- **Contract tests** against recorded Screener pages
+  (`tests/fixtures/`, refreshed with `scripts/refresh_fixtures.py`): every sector
+  theme's filter columns must exist on the recorded industry page, so a
+  column change fails offline, not in front of users.
+
 ### Changed
 - Live canary: the live-pledge check is a soft warning (the parser is covered
   offline), uses JPPOWER, and `sector_theme` fails if a filter column vanishes.
