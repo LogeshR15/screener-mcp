@@ -152,8 +152,9 @@ async def shareholding_and_pledge():
     itc = _ok(await server.get_shareholding_pattern("ITC"), "ITC shareholding")
     _check(itc["promoter_group"]["present"] is False and itc["pledge"]["status"] == "not_applicable",
            f"ITC (no promoter) misread: {itc.get('promoter_group')}, {itc.get('pledge')}")
-    # Pledges are read from Screener's cons list; WEBELSOLAR's promoters had ~89% pledged in Sep 2026.
-    ws = _ok(await server.get_shareholding_pattern("WEBELSOLAR"), "WEBELSOLAR shareholding")
+    # Pledges are read from Screener's cons list; JPPOWER's promoters had ~73% pledged in Oct 2026
+    # (WEBELSOLAR released its pledge in Sep 2026 — if this one is released too, pick another).
+    ws = _ok(await server.get_shareholding_pattern("JPPOWER"), "JPPOWER shareholding")
     _check(ws["pledge"]["status"] == "reported",
            f"promoter pledge no longer found on the page (cons list changed, or pledge released?): {ws['pledge']}")
 

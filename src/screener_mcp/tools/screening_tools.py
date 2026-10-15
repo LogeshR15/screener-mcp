@@ -30,11 +30,15 @@ from .technical_tools import (
 #     expressed as a query; running a generic growth screen and calling it
 #     "defense" returned mostly non-defense stocks.
 #
-# Sector filters may only use columns the universe pages carry: index and
-# industry tables have Market Capitalization, Price to Earning, Return on
-# equity, Profit growth 5Years, Dividend yield, ...; curated lists are read
-# from company pages (Market Capitalization, Price to Earning, Return on
-# equity, Return on capital employed, Dividend yield).
+# Sector filters may only use columns the universe pages carry. Screener's
+# market-page columns are configurable and the logged-out default is
+# Current Price, Price to Earning, Market Capitalization, Dividend yield,
+# Net Profit / Sales latest quarter, their YoY growth and Return on capital
+# employed — no ROE or 5-year growth (a filter on those excluded every
+# company in Oct 2026). Curated lists are read from company pages (Market
+# Capitalization, Price to Earning, Return on equity, Return on capital
+# employed, Dividend yield). Use the intersection: Market Capitalization,
+# Price to Earning, Return on capital employed, Dividend yield.
 
 _IND = {
     "aerospace_defense": "/market/IN07/IN0702/IN070201/IN070201001/",
@@ -99,37 +103,37 @@ THEMES: dict[str, dict] = {
     # ── sector themes ──
     "defense": {
         "description": "Defence companies (Nifty India Defence + Screener's Aerospace & Defense and "
-                       "Shipbuilding industries) with ROE > 12% and profit growth",
+                       "Shipbuilding industries) with ROCE > 12%",
         "universe": [("index", "defence"), ("industry", _IND["aerospace_defense"]), ("industry", _IND["shipbuilding"])],
-        "filters": "Market Capitalization > 500 AND Return on equity > 12 AND Profit growth 5Years > 10",
+        "filters": "Market Capitalization > 500 AND Return on capital employed > 12",
     },
     "ev_theme": {
         "description": "Nifty EV & New Age Automotive constituents (EV makers, batteries, auto components) "
-                       "with ROE > 12%",
+                       "with ROCE > 12%",
         "universe": [("index", "ev")],
-        "filters": "Market Capitalization > 1000 AND Return on equity > 12",
+        "filters": "Market Capitalization > 1000 AND Return on capital employed > 12",
     },
     "chemicals": {
         "description": "Specialty chemicals (Screener's Specialty Chemicals industry + Nifty Chemicals) with "
-                       "ROE > 15% and 5-year profit growth > 12%",
+                       "ROCE > 15%",
         "universe": [("industry", _IND["specialty_chemicals"]), ("index", "chemicals")],
-        "filters": "Market Capitalization > 500 AND Return on equity > 15 AND Profit growth 5Years > 12",
+        "filters": "Market Capitalization > 500 AND Return on capital employed > 15",
     },
     "railways": {
         "description": "Railway companies (Screener's Railway Wagons industry + a curated list of railway "
-                       "PSUs and suppliers) with ROE > 12%",
+                       "PSUs and suppliers) with ROCE > 12%",
         "universe": [("industry", _IND["railway_wagons"]),
                      ("symbols", ["RVNL", "IRCON", "IRFC", "RAILTEL", "IRCTC", "RITES", "CONCOR", "BEML",
                                   "HBLENGINE", "KERNEX"])],
-        "filters": "Market Capitalization > 500 AND Return on equity > 12",
+        "filters": "Market Capitalization > 500 AND Return on capital employed > 12",
     },
     "renewable_energy": {
         "description": "Renewable energy (curated list: wind/solar equipment makers and green power producers) "
-                       "with ROE > 10%",
+                       "with ROCE > 10%",
         "universe": [("symbols", ["SUZLON", "INOXWIND", "WAAREEENER", "PREMIERENE", "NTPCGREEN", "ACMESOLAR",
                                   "KPIGREEN", "ADANIGREEN", "JSWENERGY", "TATAPOWER", "BORORENEW", "SWSOLAR",
                                   "WEBELSOLAR", "INOXGREEN"])],
-        "filters": "Market Capitalization > 500 AND Return on equity > 10",
+        "filters": "Market Capitalization > 500 AND Return on capital employed > 10",
     },
 }
 
