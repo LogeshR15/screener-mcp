@@ -234,10 +234,15 @@ async def test_sector_theme_screens_its_universe(monkeypatch):
             return [cand("HAL", 300000, 24), cand("TINY", 100, 30)], 2
         return [cand("HAL", 300000, 24), cand("BEL", 280000, 27), cand("LOWROE", 5000, 5)], 3
 
+    async def fake_symbol_rows(symbols, warnings):  # company pages: HAL has ROE, BEL doesn't pass
+        roe = {"HAL": 24, "BEL": 8}
+        return [{"symbol": x, "fundamentals": {"Return on equity": roe[x]}} for x in symbols if x in roe]
+
     monkeypatch.setattr(st, "fetch_candidates", fake_fetch)
+    monkeypatch.setattr(st, "_symbol_rows", fake_symbol_rows)
     env = await server.screen_by_theme("defence", limit=5)
     d = env["data"]
-    assert d["theme"] == "defense" and [r["symbol"] for r in d["results"]] == ["HAL", "BEL"]
+    assert d["theme"] == "defense" and [r["symbol"] for r in d["results"]] == ["HAL"]
     assert d["universe_size"] == 4 and d["universe"][0]["type"] == "nse_index"
 
 

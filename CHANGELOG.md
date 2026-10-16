@@ -11,6 +11,11 @@
   result with `unavailable_filter_fields` instead of an unexplained empty list.
 
 ### Added
+- **Sector themes keep their ROE quality cut.** After the market-cap / ROCE
+  filter, only the surviving companies have their company page read for ROE
+  (`enrich` in a theme), so the cut that Screener's default columns dropped is
+  back without fetching the whole universe. A cold run costs one page per
+  survivor (defense ~9s, chemicals ~40s); repeats use the page cache.
 - **Request coalescing:** concurrent identical Screener requests (peers,
   comparisons and sector screens often want the same page at once) now share
   one HTTP call.

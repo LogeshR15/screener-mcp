@@ -37,6 +37,8 @@ def test_sector_theme_filters_only_use_columns_the_pages_carry():
         fields = {f for f, _, _ in st.parse_filters(theme["filters"])}
         if "industry" in sources:
             assert fields <= industry, f"{key}: industry pages lack {fields - industry}"
+        enrich = {f for f, _, _ in st.parse_filters(theme["enrich"])} if theme.get("enrich") else set()
+        assert enrich <= CURATED_FIELDS, f"{key}: company pages lack second-stage {enrich - CURATED_FIELDS}"
         if "symbols" in sources:
             assert fields <= CURATED_FIELDS, f"{key}: company pages lack {fields - CURATED_FIELDS}"
 
