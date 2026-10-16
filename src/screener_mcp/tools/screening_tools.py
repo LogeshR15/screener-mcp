@@ -30,6 +30,11 @@ from .technical_tools import (
 #     expressed as a query; running a generic growth screen and calling it
 #     "defense" returned mostly non-defense stocks.
 #
+# A theme's optional "enrich" filters (e.g. ROE) need columns the universe pages lack, so
+# they run as a second stage: only companies that passed "filters" have their company
+# page fetched (cached, paced) for the missing field. That keeps the quality cut without
+# fetching every company in a 40-company universe.
+#
 # Sector filters may only use columns the universe pages carry. Screener's
 # market-page columns are configurable and the logged-out default is
 # Current Price, Price to Earning, Market Capitalization, Dividend yield,
@@ -103,37 +108,42 @@ THEMES: dict[str, dict] = {
     # ── sector themes ──
     "defense": {
         "description": "Defence companies (Nifty India Defence + Screener's Aerospace & Defense and "
-                       "Shipbuilding industries) with ROCE > 12%",
+                       "Shipbuilding industries) with ROCE > 12% and ROE > 12%",
         "universe": [("index", "defence"), ("industry", _IND["aerospace_defense"]), ("industry", _IND["shipbuilding"])],
         "filters": "Market Capitalization > 500 AND Return on capital employed > 12",
+        "enrich": "Return on equity > 12",
     },
     "ev_theme": {
         "description": "Nifty EV & New Age Automotive constituents (EV makers, batteries, auto components) "
-                       "with ROCE > 12%",
+                       "with ROCE > 12% and ROE > 12%",
         "universe": [("index", "ev")],
         "filters": "Market Capitalization > 1000 AND Return on capital employed > 12",
+        "enrich": "Return on equity > 12",
     },
     "chemicals": {
         "description": "Specialty chemicals (Screener's Specialty Chemicals industry + Nifty Chemicals) with "
-                       "ROCE > 15%",
+                       "ROCE > 15% and ROE > 15%",
         "universe": [("industry", _IND["specialty_chemicals"]), ("index", "chemicals")],
         "filters": "Market Capitalization > 500 AND Return on capital employed > 15",
+        "enrich": "Return on equity > 15",
     },
     "railways": {
         "description": "Railway companies (Screener's Railway Wagons industry + a curated list of railway "
-                       "PSUs and suppliers) with ROCE > 12%",
+                       "PSUs and suppliers) with ROCE > 12% and ROE > 12%",
         "universe": [("industry", _IND["railway_wagons"]),
                      ("symbols", ["RVNL", "IRCON", "IRFC", "RAILTEL", "IRCTC", "RITES", "CONCOR", "BEML",
                                   "HBLENGINE", "KERNEX"])],
         "filters": "Market Capitalization > 500 AND Return on capital employed > 12",
+        "enrich": "Return on equity > 12",
     },
     "renewable_energy": {
         "description": "Renewable energy (curated list: wind/solar equipment makers and green power producers) "
-                       "with ROCE > 10%",
+                       "with ROCE > 10% and ROE > 10%",
         "universe": [("symbols", ["SUZLON", "INOXWIND", "WAAREEENER", "PREMIERENE", "NTPCGREEN", "ACMESOLAR",
                                   "KPIGREEN", "ADANIGREEN", "JSWENERGY", "TATAPOWER", "BORORENEW", "SWSOLAR",
                                   "WEBELSOLAR", "INOXGREEN"])],
         "filters": "Market Capitalization > 500 AND Return on capital employed > 10",
+        "enrich": "Return on equity > 10",
     },
 }
 
@@ -432,6 +442,21 @@ async def _universe_rows(universe: list[tuple], warnings: list[str]) -> tuple[li
     return list(rows.values()), sources
 
 
+async def _enrich_rows(rows: list[dict], fields: set[str], warnings: list[str]) -> list[dict]:
+    """Fill `fields` that a row lacks from its company page. Rows whose page can't be fetched
+    are returned unenriched (and so fail the second-stage filter), with one warning."""
+    need = [r for r in rows if any(f not in (r.get("fundamentals") or {}) for f in fields)]
+    if not need:
+        return rows
+    fetched = {r["symbol"]: r for r in await _symbol_rows([r["symbol"] for r in need], warnings)}
+    for r in need:
+        extra = (fetched.get(r["symbol"]) or {}).get("fundamentals") or {}
+        for f in fields:
+            if f not in r["fundamentals"] and extra.get(f) is not None:
+                r["fundamentals"][f] = extra[f]
+    return rows
+
+
 async def _sector_screen(key: str, theme: dict, limit: int, page: int) -> ToolResult:
     warnings: list[str] = []
     filters = parse_filters(theme["filters"])
@@ -450,6 +475,13 @@ async def _sector_screen(key: str, theme: dict, limit: int, page: int) -> ToolRe
     # A column absent for every company means Screener's page layout changed, not that
     # nothing qualifies — say so instead of returning an unexplained empty result.
     unavailable = [f for f, n in missing_counts.items() if universe and n == len(universe)]
+    enrich = parse_filters(theme["enrich"]) if theme.get("enrich") else []
+    if enrich and matched:
+        await _enrich_rows(matched, {f for f, _, _ in enrich}, warnings)
+        before = len(matched)
+        matched = [r for r in matched if _passes(r.get("fundamentals") or {}, enrich)[0]]
+        warnings.append(f"Second-stage filter ({theme['enrich']}) read from company pages: "
+                        f"{len(matched)} of {before} passed.")
     matched, excluded = _apply_hygiene(matched, exclude_flagged=True)
     matched.sort(key=lambda r: (r.get("fundamentals") or {}).get("Market Capitalization") or 0, reverse=True)
     offset = (max(1, page) - 1) * limit
@@ -458,7 +490,7 @@ async def _sector_screen(key: str, theme: dict, limit: int, page: int) -> ToolRe
         "description": theme["description"],
         "universe": sources,
         "universe_size": len(universe),
-        "filters": theme["filters"],
+        "filters": theme["filters"] + (f" AND {theme['enrich']}" if theme.get("enrich") else ""),
         "total_matches": len(matched),
         "page": page,
         "sorted_by": "Market Capitalization (desc)",

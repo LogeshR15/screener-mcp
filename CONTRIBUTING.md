@@ -186,6 +186,7 @@ quarterly growth, but no ROE or 5-year growth; the canary fails if a filter colu
         "description": "Cement makers with ROCE > 12%",
         "universe": [("industry", "/market/IN01/IN0102/IN010203/IN010203001/")],  # Cement & Cement Products
         "filters": "Market Capitalization > 1000 AND Return on capital employed > 12",
+        "enrich": "Return on equity > 12",  # optional 2nd stage, read from company pages of survivors only
     },
 ```
 
