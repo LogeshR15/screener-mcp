@@ -25,7 +25,7 @@ def _load() -> dict:
     if not _PORTFOLIO_PATH.exists():
         return {"holdings": {}}
     try:
-        data = json.loads(_PORTFOLIO_PATH.read_text())
+        data = json.loads(_PORTFOLIO_PATH.read_text(encoding="utf-8"))
         data.setdefault("holdings", {})
         return data
     except Exception:
@@ -34,7 +34,7 @@ def _load() -> dict:
 
 def _save(data: dict):
     _PORTFOLIO_PATH.parent.mkdir(parents=True, exist_ok=True)
-    _PORTFOLIO_PATH.write_text(json.dumps(data, indent=2, ensure_ascii=False))
+    _PORTFOLIO_PATH.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
 
 
 def _parse_num(value) -> Optional[float]:

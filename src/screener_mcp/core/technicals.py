@@ -86,7 +86,7 @@ def _cache_get(company_id: str, days: int) -> Optional[dict]:
     hit = _memory_cache.get(company_id)
     if hit is None:
         try:
-            raw = json.loads(_cache_path(company_id).read_text())
+            raw = json.loads(_cache_path(company_id).read_text(encoding="utf-8"))
             hit = (raw["fetched_at"], raw["days"], raw["payload"])
             _memory_cache[company_id] = hit
         except (OSError, ValueError, KeyError):
@@ -102,7 +102,7 @@ def _cache_put(company_id: str, days: int, payload: dict):
     _memory_cache[company_id] = (now, days, payload)
     try:
         _CACHE_DIR.mkdir(parents=True, exist_ok=True)
-        _cache_path(company_id).write_text(json.dumps({"fetched_at": now, "days": days, "payload": payload}))
+        _cache_path(company_id).write_text(json.dumps({"fetched_at": now, "days": days, "payload": payload}), encoding="utf-8")
     except OSError as e:
         logger.debug("price cache write failed for %s: %s", company_id, e)
 

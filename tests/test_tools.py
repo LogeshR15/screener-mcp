@@ -82,13 +82,13 @@ async def test_every_tool_has_a_description(tool_names):
 
 async def test_readme_tool_count_is_accurate(tool_names):
     """README's 'Tools — N total' heading matches the real count."""
-    heading = re.search(r"^## Tools — (\d+) total", README.read_text(), re.MULTILINE)
+    heading = re.search(r"^## Tools — (\d+) total", README.read_text(encoding="utf-8"), re.MULTILINE)
     assert heading, "README is missing the '## Tools — N total' heading"
     assert int(heading.group(1)) == len(tool_names)
 
 
 async def test_every_tool_is_documented_in_readme(tool_names):
-    readme = README.read_text()
+    readme = README.read_text(encoding="utf-8")
     undocumented = [name for name in tool_names if f"`{name}`" not in readme]
     assert not undocumented, f"tools missing from README: {undocumented}"
 
@@ -119,7 +119,7 @@ async def test_every_theme_and_its_criteria_are_in_the_tool_description():
 
 
 def test_every_theme_is_documented_in_readme():
-    readme = README.read_text()
+    readme = README.read_text(encoding="utf-8")
     undocumented = [theme for theme in THEMES if theme not in readme]
     assert not undocumented, f"themes missing from README: {undocumented}"
 

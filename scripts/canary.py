@@ -200,7 +200,7 @@ async def main() -> int:
     summary = {"failed": [n for n, _ in failures], "warnings": [n for n, _ in soft_failures]}
     report = os.getenv("CANARY_REPORT")
     if report:
-        with open(report, "w") as f:
+        with open(report, "w", encoding="utf-8") as f:
             f.write("\n".join(f"- **{n}**: {d}" for n, d in failures) or "all checks passed")
             if soft_failures:
                 f.write("\n\nSoft (NSE) warnings:\n" + "\n".join(f"- {n}: {d}" for n, d in soft_failures))

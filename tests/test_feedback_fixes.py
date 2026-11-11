@@ -29,7 +29,7 @@ from screener_mcp.tools import screening_tools as st
 from screener_mcp.tools import shareholders as sh_mod
 from screener_mcp.tools.announcements import _categorize
 
-ITC = (Path(__file__).parent / "fixtures" / "itc_company_page.html").read_text()
+ITC = (Path(__file__).parent / "fixtures" / "itc_company_page.html").read_text(encoding="utf-8")
 
 
 @pytest.fixture

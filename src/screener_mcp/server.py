@@ -1102,7 +1102,7 @@ Profit growth 5Years > 20 AND Sales growth 5Years > 20 AND Return on capital emp
 # Its trailing ES `export {...}` is rewritten to a `globalThis.ExtApps` global
 # because the inlined code runs as a classic block inside the module script.
 def _inline_ext_apps(html: str) -> str:
-    bundle = (_UI_DIR / "ext-apps-app-with-deps.js").read_text()
+    bundle = (_UI_DIR / "ext-apps-app-with-deps.js").read_text(encoding="utf-8")
 
     def to_global(m: re.Match) -> str:
         pairs = []
@@ -1115,7 +1115,7 @@ def _inline_ext_apps(html: str) -> str:
     return html.replace("/*__EXT_APPS_BUNDLE__*/", bundle)
 
 
-_stock_comparison_html = _inline_ext_apps((_UI_DIR / "stock_comparison.html").read_text())
+_stock_comparison_html = _inline_ext_apps((_UI_DIR / "stock_comparison.html").read_text(encoding="utf-8"))
 
 
 @mcp.resource(

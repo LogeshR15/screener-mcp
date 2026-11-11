@@ -62,7 +62,7 @@ def _embed_one(text: str) -> list[float]:
 
 def _load_manifest() -> dict:
     try:
-        return json.loads(_MANIFEST_PATH.read_text())
+        return json.loads(_MANIFEST_PATH.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return {}
 
@@ -71,7 +71,7 @@ def _save_manifest_entry(collection_name: str, entry: dict):
     manifest = _load_manifest()
     manifest[collection_name] = entry
     _MANIFEST_PATH.parent.mkdir(parents=True, exist_ok=True)
-    _MANIFEST_PATH.write_text(json.dumps(manifest, indent=2))
+    _MANIFEST_PATH.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
 
 
 def get_index_info(collection_name: str) -> Optional[dict]:

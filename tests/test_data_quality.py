@@ -506,7 +506,7 @@ def test_parse_real_screen_results_page():
     """Real (trimmed) Screener screen page — same template /screen/raw/ serves."""
     from pathlib import Path
 
-    html = (Path(__file__).parent / "fixtures" / "screen_results_page2.html").read_text()
+    html = (Path(__file__).parent / "fixtures" / "screen_results_page2.html").read_text(encoding="utf-8")
     d = parse_screen_results(html)
     assert d["total_results"] == 159 and d["total_pages"] == 7
     assert len(d["companies"]) == 3
