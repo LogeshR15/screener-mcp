@@ -56,8 +56,12 @@ import asyncio
 import httpx
 import os
 import re
+from typing import Any
 from pathlib import Path
-from mcp.server.fastmcp import FastMCP
+from importlib.metadata import PackageNotFoundError, version as _pkg_version
+
+from mcp.server.mcpserver import Context, MCPServer
+from mcp.types import Icon, InputRequiredResult, ToolAnnotations
 from .core.envelope import ToolError, error_envelope, to_envelope
 from .core.nse_client import NSEError
 from .tools.company_tools import (
@@ -113,11 +117,41 @@ from .tools.portfolio import (
 _TOOL_TIMEOUT = float(os.getenv("SCREENER_TOOL_TIMEOUT", "240"))
 
 
-def _safe(result):
+# How often a long-running tool sends a progress notification while it works.
+_PROGRESS_INTERVAL = float(os.getenv("SCREENER_PROGRESS_INTERVAL", "5"))
+
+
+async def _heartbeat(ctx: Context, label: str) -> None:
+    """Send notifications/progress every few seconds until cancelled, so a
+    client waiting on a slow tool sees it is alive. A no-op unless the client
+    sent a progressToken with the request."""
+    elapsed = 0.0
+    while True:
+        await asyncio.sleep(_PROGRESS_INTERVAL)
+        elapsed += _PROGRESS_INTERVAL
+        try:
+            await ctx.report_progress(elapsed, message=f"{label}: still working ({elapsed:.0f}s)")
+        except Exception:
+            return  # progress is best-effort; never fail the tool over it
+
+
+def _safe(result, ctx: "Context | None" = None):
     """Wrap a tool implementation so it always returns the standard envelope
-    (see core/envelope.py) and network/auth errors become structured errors."""
+    (see core/envelope.py) and network/auth errors become structured errors.
+
+    With a request ``ctx``, progress notifications are sent while it runs."""
     import functools
     async def wrapper(*args, **kwargs):
+        beat = None
+        if ctx is not None:
+            beat = asyncio.create_task(_heartbeat(ctx, result.__name__.lstrip("_").replace("_", " ")))
+        try:
+            return await _run_safely(*args, **kwargs)
+        finally:
+            if beat is not None:
+                beat.cancel()
+
+    async def _run_safely(*args, **kwargs):
         try:
             return to_envelope(await asyncio.wait_for(result(*args, **kwargs), timeout=_TOOL_TIMEOUT))
         except asyncio.TimeoutError:
@@ -167,15 +201,50 @@ STOCK_COMPARISON_WIDGET_URI = "ui://screener/stock-comparison.html"
 MCP_APP_MIME_TYPE = "text/html;profile=mcp-app"
 
 
-mcp = FastMCP(
-    "Screener Stock Research",
-    host=os.getenv("MCP_HOST", "127.0.0.1"),
-    # Prefer generic PORT/MCP_PORT env vars used by most hosts (Render, Railway, Fly.io, etc.).
-    port=int(
-        os.getenv("PORT")
-        or os.getenv("MCP_PORT")
-        or "8000"
-    ),
+try:
+    __version__ = _pkg_version("screener-mcp")
+except PackageNotFoundError:  # running from a source checkout without install
+    __version__ = "0.0.0"
+
+# Network settings for the streamable-http transport (ignored on stdio).
+# Loopback by default: a bare HTTP server has no auth, so binding to all
+# interfaces must be an explicit opt-in (the Docker image sets MCP_HOST).
+HTTP_HOST = os.getenv("MCP_HOST", "127.0.0.1")
+# Prefer generic PORT/MCP_PORT env vars used by most hosts (Render, Railway, Fly.io, etc.).
+HTTP_PORT = int(os.getenv("PORT") or os.getenv("MCP_PORT") or "8000")
+
+
+def _read_only(title: str) -> ToolAnnotations:
+    """Annotations for a tool that only fetches data from external sources."""
+    return ToolAnnotations(title=title, read_only_hint=True, open_world_hint=True)
+
+
+class ScreenerServer(MCPServer):
+    """MCPServer that flags error envelopes as tool errors on the wire.
+
+    Tools return the standard envelope (core/envelope.py) both to in-process
+    callers and to MCP clients. When the envelope says status="error", the
+    MCP result must also carry isError=true so clients and models treat the
+    call as failed rather than as an empty success."""
+
+    async def call_tool(self, name, arguments, context=None):
+        res = await super().call_tool(name, arguments, context)
+        if isinstance(res, InputRequiredResult) or res.is_error:
+            return res
+        sc = res.structured_content
+        if isinstance(sc, dict) and sc.get("status") == "error":
+            return res.model_copy(update={"is_error": True})
+        return res
+
+
+mcp = ScreenerServer(
+    "screener-mcp",
+    title="Screener Stock Research",
+    description="Indian stock research (BSE/NSE) powered by Screener.in: fundamentals, screens, "
+    "shareholding, filings and earnings-call search.",
+    version=__version__,
+    website_url="https://github.com/LogeshR15/screener-mcp",
+    icons=[Icon(src="https://logeshr15.github.io/screener-mcp/icon-192.png", mime_type="image/png", sizes=["192x192"])],
     instructions="""
 You are an expert Indian equity analyst with deep knowledge of Indian stock markets,
 Screener.in data, and long-term investing principles.
@@ -200,8 +269,8 @@ are broad, and you cannot predict stock prices.
 
 # ─── Search & Discovery ────────────────────────────────────────────────────────
 
-@mcp.tool(annotations={"title": "Search Company", "readOnlyHint": True, "openWorldHint": True})
-async def search_company(query: str) -> dict:
+@mcp.tool(annotations=_read_only("Search Company"))
+async def search_company(query: str) -> dict[str, Any]:
     """
     Search for an Indian stock/company by name or NSE/BSE symbol.
 
@@ -214,7 +283,7 @@ async def search_company(query: str) -> dict:
     return await _safe(_search_company)(query)
 
 
-@mcp.tool(annotations={"title": "Screen Stocks", "readOnlyHint": True, "openWorldHint": True})
+@mcp.tool(annotations=_read_only("Screen Stocks"))
 async def screen_stocks(
     query: str,
     limit: int = 25,
@@ -226,7 +295,8 @@ async def screen_stocks(
     exclude_flagged: bool = True,
     peer_relative: bool = False,
     page: int = 1,
-) -> dict:
+    ctx: Context | None = None,
+) -> dict[str, Any]:
     """
     Run a stock screen: Screener.in fundamental fields and/or technical
     (price-action) clauses, combined with AND, OR and parentheses.
@@ -282,15 +352,15 @@ async def screen_stocks(
     Returns partial=true (with a reason) if only some candidates could be
     checked — e.g. more fundamental matches than max_candidates.
     """
-    return await _safe(_screen)(
+    return await _safe(_screen, ctx)(
         query, sort_by=sort_by, order=order, limit=limit, universe=universe,
         max_candidates=max_candidates, min_market_cap=min_market_cap,
         exclude_flagged=exclude_flagged, peer_relative=peer_relative, page=page,
     )
 
 
-@mcp.tool(annotations={"title": "Relative Valuation", "readOnlyHint": True, "openWorldHint": True})
-async def get_relative_valuation(symbols: list[str] | str) -> dict:
+@mcp.tool(annotations=_read_only("Relative Valuation"))
+async def get_relative_valuation(symbols: list[str] | str, ctx: Context | None = None) -> dict[str, Any]:
     """
     Is this P/E cheap *for its industry*? Compares each stock's P/E and ROCE
     with the median of every listed company in its Screener industry, for up
@@ -307,11 +377,11 @@ async def get_relative_valuation(symbols: list[str] | str) -> dict:
     Tip: screen_stocks(..., peer_relative=True) attaches the same data to
     screen results directly.
     """
-    return await _safe(_get_relative_valuation)(symbols)
+    return await _safe(_get_relative_valuation, ctx)(symbols)
 
 
-@mcp.tool(annotations={"title": "Moat Signals", "readOnlyHint": True, "openWorldHint": True})
-async def get_moat_signals(symbol: str) -> dict:
+@mcp.tool(annotations=_read_only("Moat Signals"))
+async def get_moat_signals(symbol: str) -> dict[str, Any]:
     """
     Quantitative moat proxies for a company — market position plus how
     durable its economics have been.
@@ -334,8 +404,8 @@ async def get_moat_signals(symbol: str) -> dict:
     return await _safe(_get_moat_signals)(symbol)
 
 
-@mcp.tool(annotations={"title": "Forward Outlook", "readOnlyHint": True, "openWorldHint": True})
-async def get_forward_outlook(symbol: str, days: int = 180, include_earnings_call: bool = True) -> dict:
+@mcp.tool(annotations=_read_only("Forward Outlook"))
+async def get_forward_outlook(symbol: str, days: int = 180, include_earnings_call: bool = True, ctx: Context | None = None) -> dict[str, Any]:
     """
     Forward-looking inputs in one call, instead of extrapolating trailing data:
 
@@ -354,10 +424,10 @@ async def get_forward_outlook(symbol: str, days: int = 180, include_earnings_cal
     days: filing look-back (30-730, default 180)
     include_earnings_call: set False to skip the transcript step (faster)
     """
-    return await _safe(_get_forward_outlook)(symbol, days, include_earnings_call)
+    return await _safe(_get_forward_outlook, ctx)(symbol, days, include_earnings_call)
 
 
-@mcp.tool(annotations={"title": "52-Week-Low Candidates", "readOnlyHint": True, "openWorldHint": True})
+@mcp.tool(annotations=_read_only("52-Week-Low Candidates"))
 async def get_52_week_low_candidates(
     min_roce: float = 15,
     max_debt_to_equity: float = 0.5,
@@ -365,7 +435,8 @@ async def get_52_week_low_candidates(
     min_market_cap: float = 1000,
     universe: str = "",
     limit: int = 20,
-) -> dict:
+    ctx: Context | None = None,
+) -> dict[str, Any]:
     """
     Quality stocks trading near their 52-week low — in one call.
 
@@ -384,13 +455,13 @@ async def get_52_week_low_candidates(
       get_52_week_low_candidates(min_roce=20, max_debt_to_equity=0.2, max_pct_above_52w_low=5)
       get_52_week_low_candidates(universe="midcap100", min_market_cap=5000)
     """
-    return await _safe(_get_52w_low)(
+    return await _safe(_get_52w_low, ctx)(
         min_roce, max_debt_to_equity, max_pct_above_52w_low, min_market_cap, universe, limit,
     )
 
 
-@mcp.tool(annotations={"title": "Compare To Sector", "readOnlyHint": True, "openWorldHint": True})
-async def compare_to_sector(symbol: str, days: int = 30, benchmark: str = "") -> dict:
+@mcp.tool(annotations=_read_only("Compare To Sector"))
+async def compare_to_sector(symbol: str, days: int = 30, benchmark: str = "") -> dict[str, Any]:
     """
     Has this stock fallen (or risen) more or less than its sector and the
     market? Separates a market/sector pullback from a company-specific move.
@@ -413,8 +484,8 @@ async def compare_to_sector(symbol: str, days: int = 30, benchmark: str = "") ->
     return await _safe(_compare_to_sector)(symbol, days, benchmark)
 
 
-@mcp.tool(annotations={"title": "Get Recent News", "readOnlyHint": True, "openWorldHint": True})
-async def get_recent_news(symbol: str, days: int = 14, limit: int = 20) -> dict:
+@mcp.tool(annotations=_read_only("Get Recent News"))
+async def get_recent_news(symbol: str, days: int = 14, limit: int = 20) -> dict[str, Any]:
     """
     Recent news headlines about a company (Google News, Indian edition).
 
@@ -435,8 +506,8 @@ async def get_recent_news(symbol: str, days: int = 14, limit: int = 20) -> dict:
     return await _safe(_get_recent_news)(symbol, days, limit)
 
 
-@mcp.tool(annotations={"title": "Get Analyst Targets", "readOnlyHint": True, "openWorldHint": True})
-async def get_analyst_targets(symbol: str) -> dict:
+@mcp.tool(annotations=_read_only("Get Analyst Targets"))
+async def get_analyst_targets(symbol: str) -> dict[str, Any]:
     """
     Analyst price targets for a stock, from two independent sources:
 
@@ -459,7 +530,7 @@ async def get_analyst_targets(symbol: str) -> dict:
     return await _safe(_get_analyst_targets)(symbol)
 
 
-async def screen_by_theme(theme: str, limit: int = 20, page: int = 1) -> dict:
+async def screen_by_theme(theme: str, limit: int = 20, page: int = 1) -> dict[str, Any]:
     return await _safe(_theme)(theme, limit=limit, page=page)
 
 
@@ -483,14 +554,14 @@ screen_by_theme.__doc__ = f"""
       screen_by_theme("defense")
       screen_by_theme("compounders", page=2)
     """
-screen_by_theme = mcp.tool(annotations={"title": "Screen By Theme", "readOnlyHint": True, "openWorldHint": True})(
+screen_by_theme = mcp.tool(annotations=_read_only("Screen By Theme"))(
     screen_by_theme)
 
 
 # ─── Company Deep Dive ─────────────────────────────────────────────────────────
 
-@mcp.tool(annotations={"title": "Get Company Overview", "readOnlyHint": True, "openWorldHint": True})
-async def get_company_overview(symbol: str, financial_type: str = "consolidated") -> dict:
+@mcp.tool(annotations=_read_only("Get Company Overview"))
+async def get_company_overview(symbol: str, financial_type: str = "consolidated") -> dict[str, Any]:
     """
     Get a company's key ratios, current price, 52-week range, and about section.
 
@@ -506,13 +577,13 @@ async def get_company_overview(symbol: str, financial_type: str = "consolidated"
     return await _safe(_get_overview)(symbol, financial_type)
 
 
-@mcp.tool(annotations={"title": "Get Financials", "readOnlyHint": True, "openWorldHint": True})
+@mcp.tool(annotations=_read_only("Get Financials"))
 async def get_financials(
     symbol: str,
     statement: str = "profit_loss",
     financial_type: str = "consolidated",
     years: int = 5,
-) -> dict:
+) -> dict[str, Any]:
     """
     Get financial statements for a company, as numbers (₹ Cr unless the
     label says % or days).
@@ -537,8 +608,8 @@ async def get_financials(
     return await _safe(_get_financials)(symbol, statement, financial_type, years)
 
 
-@mcp.tool(annotations={"title": "Get Quarterly Results", "readOnlyHint": True, "openWorldHint": True})
-async def get_quarterly_results(symbol: str, financial_type: str = "consolidated") -> dict:
+@mcp.tool(annotations=_read_only("Get Quarterly Results"))
+async def get_quarterly_results(symbol: str, financial_type: str = "consolidated") -> dict[str, Any]:
     """
     Get the last 8 quarters of results for a company.
 
@@ -550,8 +621,8 @@ async def get_quarterly_results(symbol: str, financial_type: str = "consolidated
     return await _safe(_get_quarterly)(symbol, financial_type)
 
 
-@mcp.tool(annotations={"title": "Get Shareholding Pattern", "readOnlyHint": True, "openWorldHint": True})
-async def get_shareholding_pattern(symbol: str) -> dict:
+@mcp.tool(annotations=_read_only("Get Shareholding Pattern"))
+async def get_shareholding_pattern(symbol: str) -> dict[str, Any]:
     """
     Shareholding pattern for the last 8 quarters, with the analysis:
 
@@ -574,8 +645,8 @@ async def get_shareholding_pattern(symbol: str) -> dict:
     return await _safe(_get_shareholding)(symbol)
 
 
-@mcp.tool(annotations={"title": "Get Peer Comparison", "readOnlyHint": True, "openWorldHint": True})
-async def get_peer_comparison(symbol: str, financial_type: str = "consolidated") -> dict:
+@mcp.tool(annotations=_read_only("Get Peer Comparison"))
+async def get_peer_comparison(symbol: str, financial_type: str = "consolidated") -> dict[str, Any]:
     """
     Get peer comparison table as shown on Screener.in for a company.
 
@@ -588,11 +659,11 @@ async def get_peer_comparison(symbol: str, financial_type: str = "consolidated")
 
 
 @mcp.tool(
-    annotations={"title": "Compare Companies", "readOnlyHint": True, "openWorldHint": True},
+    annotations=_read_only("Compare Companies"),
     # "ui/resourceUri" is the older flat key some hosts still read
     meta={"ui": {"resourceUri": STOCK_COMPARISON_WIDGET_URI}, "ui/resourceUri": STOCK_COMPARISON_WIDGET_URI},
 )
-async def compare_companies(symbols: list[str] | str, financial_type: str = "consolidated") -> dict:
+async def compare_companies(symbols: list[str] | str, financial_type: str = "consolidated", ctx: Context | None = None) -> dict[str, Any]:
     """
     Side-by-side comparison of 2 to 6 companies: price, market cap, P/E,
     book value, ROCE, ROE, debt-to-equity, dividend yield, 52-week range,
@@ -611,7 +682,7 @@ async def compare_companies(symbols: list[str] | str, financial_type: str = "con
       compare_companies(["ITC", "HINDUNILVR"])
       compare_companies("TCS,INFY,WIPRO,HCLTECH")
     """
-    env = await _safe(_compare)(symbols, financial_type)
+    env = await _safe(_compare, ctx)(symbols, financial_type)
     # The dashboard reads `stocks` / `count` at the top level of the result.
     data = env.get("data") or {}
     stocks = _dashboard_rows(data) if data else []
@@ -620,8 +691,8 @@ async def compare_companies(symbols: list[str] | str, financial_type: str = "con
 
 # ─── Analysis Tools ────────────────────────────────────────────────────────────
 
-@mcp.tool(annotations={"title": "Get Full Analysis", "readOnlyHint": True, "openWorldHint": True})
-async def get_full_analysis(symbol: str, financial_type: str = "consolidated") -> dict:
+@mcp.tool(annotations=_read_only("Get Full Analysis"))
+async def get_full_analysis(symbol: str, financial_type: str = "consolidated", ctx: Context | None = None) -> dict[str, Any]:
     """
     Fetch ALL financial data for a company in a single call, as one report.
 
@@ -638,11 +709,11 @@ async def get_full_analysis(symbol: str, financial_type: str = "consolidated") -
 
     symbol: NSE/BSE symbol
     """
-    return await _safe(_full_analysis)(symbol, financial_type)
+    return await _safe(_full_analysis, ctx)(symbol, financial_type)
 
 
-@mcp.tool(annotations={"title": "Analyze Red Flags", "readOnlyHint": True, "openWorldHint": True})
-async def analyze_red_flags(symbol: str, financial_type: str = "consolidated") -> dict:
+@mcp.tool(annotations=_read_only("Analyze Red Flags"))
+async def analyze_red_flags(symbol: str, financial_type: str = "consolidated") -> dict[str, Any]:
     """
     Rule-based red-flag checks over a company's full history — computed
     here, each flag with its severity and the numbers behind it:
@@ -667,8 +738,8 @@ async def analyze_red_flags(symbol: str, financial_type: str = "consolidated") -
 
 # ─── Document Analysis ────────────────────────────────────────────────────────
 
-@mcp.tool(annotations={"title": "Get Document List", "readOnlyHint": True, "openWorldHint": True})
-async def get_document_list(symbol: str) -> dict:
+@mcp.tool(annotations=_read_only("Get Document List"))
+async def get_document_list(symbol: str) -> dict[str, Any]:
     """
     List all available annual reports and earnings call transcripts for a company.
 
@@ -682,7 +753,7 @@ async def get_document_list(symbol: str) -> dict:
     return await _safe(_get_document_list)(symbol)
 
 
-@mcp.tool(annotations={"title": "Ask Company Research", "readOnlyHint": True, "openWorldHint": True})
+@mcp.tool(annotations=_read_only("Ask Company Research"))
 async def ask_company_research(
     symbol: str,
     question: str = "",
@@ -693,7 +764,8 @@ async def ask_company_research(
     max_annual_reports: int = 3,
     max_earnings_calls: int = 4,
     force_reindex: bool = False,
-) -> dict:
+    ctx: Context | None = None,
+) -> dict[str, Any]:
     """
     Ask a question over a company's annual reports and earnings-call
     transcripts using semantic search — across all recent documents at once,
@@ -720,17 +792,18 @@ async def ask_company_research(
 
     Requires the [ai] extra: pip install 'screener-mcp[ai]'
     """
-    return await _safe(_ask_company_research)(
+    return await _safe(_ask_company_research, ctx)(
         symbol, question, doc_type, year, quarter, pdf_url, max_annual_reports, max_earnings_calls, force_reindex,
     )
 
 
-@mcp.tool(annotations={"title": "Search Market Commentary", "readOnlyHint": True, "openWorldHint": True})
+@mcp.tool(annotations=_read_only("Search Market Commentary"))
 async def search_market_commentary(
     question: str,
     symbols: list[str],
     top_k_per_symbol: int = 3,
-) -> dict:
+    ctx: Context | None = None,
+) -> dict[str, Any]:
     """
     Semantic search for a question across MULTIPLE companies' already-indexed
     documents at once — e.g. "which of these companies mentioned raw material
@@ -747,17 +820,17 @@ async def search_market_commentary(
       search_market_commentary("raw material cost pressure", ["TATASTEEL", "JSWSTEEL", "SAIL"])
       search_market_commentary("management outlook on margins", ["ITC", "HINDUNILVR", "NESTLEIND"])
     """
-    return await _safe(_search_market_commentary)(question, symbols, True, top_k_per_symbol)
+    return await _safe(_search_market_commentary, ctx)(question, symbols, True, top_k_per_symbol)
 
 
 # ─── Corporate Actions & Events ────────────────────────────────────────────────
 
-@mcp.tool(annotations={"title": "Get Company Announcements", "readOnlyHint": True, "openWorldHint": True})
+@mcp.tool(annotations=_read_only("Get Company Announcements"))
 async def get_company_announcements(
     symbol: str,
     category: str = "all",
     days: int = 0,
-) -> dict:
+) -> dict[str, Any]:
     """
     Fetch recent company announcements (exchange filings) from NSE.
 
@@ -781,8 +854,8 @@ async def get_company_announcements(
     return await _safe(_get_announcements)(symbol, category, days)
 
 
-@mcp.tool(annotations={"title": "Get Bulk Deals", "readOnlyHint": True, "openWorldHint": True})
-async def get_bulk_deals(symbol: str = "", name: str = "", days: int = 30) -> dict:
+@mcp.tool(annotations=_read_only("Get Bulk Deals"))
+async def get_bulk_deals(symbol: str = "", name: str = "", days: int = 30) -> dict[str, Any]:
     """
     NSE bulk deals (single trades > 0.5% of a company's equity) — for one
     company, for one investor across the market, or both.
@@ -805,8 +878,8 @@ async def get_bulk_deals(symbol: str = "", name: str = "", days: int = 30) -> di
     return await _safe(_get_bulk_deals)(symbol, name, days)
 
 
-@mcp.tool(annotations={"title": "Get Insider Trading", "readOnlyHint": True, "openWorldHint": True})
-async def get_insider_trading(symbol: str, days: int = 365) -> dict:
+@mcp.tool(annotations=_read_only("Get Insider Trading"))
+async def get_insider_trading(symbol: str, days: int = 365) -> dict[str, Any]:
     """
     Recent insider trading disclosures (SEBI PIT Regulation 7(2)) for a company.
 
@@ -828,8 +901,8 @@ async def get_insider_trading(symbol: str, days: int = 365) -> dict:
 
 # ─── Commodity Analysis ────────────────────────────────────────────────────────
 
-@mcp.tool(annotations={"title": "Get Commodity Prices", "readOnlyHint": True, "openWorldHint": True})
-async def get_commodity_prices(commodity: str, years: int = 5) -> dict:
+@mcp.tool(annotations=_read_only("Get Commodity Prices"))
+async def get_commodity_prices(commodity: str, years: int = 5) -> dict[str, Any]:
     """
     Commodity price context and its impact on Indian listed companies.
 
@@ -856,13 +929,13 @@ async def get_commodity_prices(commodity: str, years: int = 5) -> dict:
 
 # ─── Research Notebook ────────────────────────────────────────────────────────
 
-@mcp.tool(annotations={"title": "Notebook AI (Research Notes)", "readOnlyHint": False, "destructiveHint": True, "idempotentHint": False, "openWorldHint": False})
+@mcp.tool(annotations=ToolAnnotations(title='Notebook AI (Research Notes)', read_only_hint=False, destructive_hint=True, idempotent_hint=False, open_world_hint=False))
 async def notebook_ai(
     action: str,
     symbol: str = "",
     content: str = "",
     note_id: str = "",
-) -> dict:
+) -> dict[str, Any]:
     """
     Save, read, and AI-summarize your investment research notes locally.
 
@@ -888,8 +961,8 @@ async def notebook_ai(
 
 # ─── Portfolio ──────────────────────────────────────────────────────────────────
 
-@mcp.tool(annotations={"title": "Add Portfolio Stock", "readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": False})
-async def add_portfolio_stock(symbol: str, quantity: float, avg_price: float) -> dict:
+@mcp.tool(annotations=ToolAnnotations(title='Add Portfolio Stock', read_only_hint=False, destructive_hint=False, idempotent_hint=False, open_world_hint=False))
+async def add_portfolio_stock(symbol: str, quantity: float, avg_price: float) -> dict[str, Any]:
     """
     Add a holding to your local portfolio (~/.screener-mcp/portfolio.json).
 
@@ -909,12 +982,12 @@ async def add_portfolio_stock(symbol: str, quantity: float, avg_price: float) ->
     return await _safe(_add_portfolio_stock)(symbol, quantity, avg_price)
 
 
-@mcp.tool(annotations={"title": "Update Portfolio Stock", "readOnlyHint": False, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False})
+@mcp.tool(annotations=ToolAnnotations(title='Update Portfolio Stock', read_only_hint=False, destructive_hint=False, idempotent_hint=True, open_world_hint=False))
 async def update_portfolio_stock(
     symbol: str,
     quantity: float = 0.0,
     avg_price: float = 0.0,
-) -> dict:
+) -> dict[str, Any]:
     """
     Overwrite quantity and/or average price for an existing holding — e.g.
     after a partial sell (set the new remaining quantity) or to correct
@@ -938,8 +1011,8 @@ async def update_portfolio_stock(
     )
 
 
-@mcp.tool(annotations={"title": "Remove Portfolio Stock", "readOnlyHint": False, "destructiveHint": True, "idempotentHint": True, "openWorldHint": False})
-async def remove_portfolio_stock(symbol: str) -> dict:
+@mcp.tool(annotations=ToolAnnotations(title='Remove Portfolio Stock', read_only_hint=False, destructive_hint=True, idempotent_hint=True, open_world_hint=False))
+async def remove_portfolio_stock(symbol: str) -> dict[str, Any]:
     """
     Remove a holding entirely from the portfolio (full exit).
 
@@ -949,8 +1022,8 @@ async def remove_portfolio_stock(symbol: str) -> dict:
     return await _safe(_remove_portfolio_stock)(symbol)
 
 
-@mcp.tool(annotations={"title": "Get Portfolio", "readOnlyHint": True, "openWorldHint": True})
-async def get_portfolio() -> dict:
+@mcp.tool(annotations=_read_only("Get Portfolio"))
+async def get_portfolio() -> dict[str, Any]:
     """
     View your portfolio with live prices, P&L, and per-holding weight.
 
@@ -1137,6 +1210,38 @@ async def health_check(request):
     return JSONResponse({"status": "ok"})
 
 
+# ─── Prompts ──────────────────────────────────────────────────────────────────
+# Reusable research workflows a client can surface as slash commands.
+
+@mcp.prompt(title="Stock Deep Dive")
+def deep_dive(symbol: str) -> str:
+    """Full fundamental deep dive on one company, ending in a verdict with risks."""
+    return (
+        f"Do a long-term investor's deep dive on {symbol}.\n"
+        f"1. get_full_analysis('{symbol}') for financials, ratios and shareholding.\n"
+        f"2. analyze_red_flags('{symbol}') and get_moat_signals('{symbol}').\n"
+        f"3. get_relative_valuation(['{symbol}']) and get_forward_outlook('{symbol}').\n"
+        f"4. ask_company_research('{symbol}', ...) on any red flag or guidance question "
+        "before treating it as settled.\n"
+        "Summarise: business quality, growth, balance sheet, governance, valuation vs "
+        "industry, key risks, and what would change the view. Cite the numbers you used."
+    )
+
+
+@mcp.prompt(title="Value Screen")
+def value_screen(min_roce: float = 15, max_pe: float = 20) -> str:
+    """Find quality companies at reasonable valuations and shortlist the best few."""
+    return (
+        "Run screen_stocks('Return on capital employed > "
+        f"{min_roce:g} AND Price to Earning < {max_pe:g} AND Debt to equity < 0.5', "
+        "peer_relative=True).\n"
+        "Drop anything that looks like a value trap: run analyze_red_flags on the top "
+        "candidates and check promoter pledging with get_shareholding_pattern.\n"
+        "Return a shortlist of up to 5 with one line each on why it is cheap and why "
+        "that might be wrong."
+    )
+
+
 # ─── Entry point ──────────────────────────────────────────────────────────────
 
 def main():
@@ -1144,7 +1249,14 @@ def main():
     # MCP clients that need an HTTP server URL) instead of the default stdio
     # mode used by claude mcp add / local desktop clients.
     transport = os.getenv("MCP_TRANSPORT", "stdio")
-    mcp.run(transport=transport)
+    if transport == "stdio":
+        mcp.run()
+    elif transport == "streamable-http":
+        mcp.run("streamable-http", host=HTTP_HOST, port=HTTP_PORT)
+    elif transport == "sse":  # legacy transport, kept for older clients
+        mcp.run("sse", host=HTTP_HOST, port=HTTP_PORT)
+    else:
+        raise SystemExit(f"Unknown MCP_TRANSPORT {transport!r} (use stdio or streamable-http)")
 
 
 if __name__ == "__main__":

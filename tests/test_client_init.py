@@ -3,7 +3,7 @@
 import asyncio
 
 from screener_mcp import client as client_module
-from screener_mcp.server import mcp
+from screener_mcp import server as server_module
 
 
 async def test_concurrent_first_callers_never_see_a_logged_out_client(monkeypatch):
@@ -37,7 +37,7 @@ async def test_concurrent_first_callers_never_see_a_logged_out_client(monkeypatc
 def test_http_server_binds_to_loopback_by_default():
     # Docker opts in to 0.0.0.0 via MCP_HOST; the library default must not
     # expose an unauthenticated server (holding credentials) to the network.
-    assert mcp.settings.host == "127.0.0.1"
+    assert server_module.HTTP_HOST == "127.0.0.1"
 
 
 async def test_failed_login_is_retried_but_throttled(monkeypatch):

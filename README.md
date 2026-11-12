@@ -1,5 +1,7 @@
 # screener-mcp
 
+<!-- mcp-name: io.github.LogeshR15/screener-mcp -->
+
 An MCP (Model Context Protocol) server that gives Claude live access to [Screener.in](https://www.screener.in), NSE, and MCX data — turning Claude into a research assistant for Indian stocks.
 
 [![PyPI](https://img.shields.io/pypi/v/screener-mcp)](https://pypi.org/project/screener-mcp/)
@@ -84,6 +86,10 @@ If these return real data, the server is working end to end.
 - **Portfolio** — a private, local holdings tracker with live P&L
 
 30 tools in total — full reference [below](#tools--30-total). Every tool returns the same [response envelope](#response-envelope), so partial or degraded data is always explicit.
+
+Two prompts — `deep_dive(symbol)` and `value_screen(min_roce, max_pe)` — package common research workflows; clients that support MCP prompts show them as slash commands.
+
+Speaks MCP protocol **2026-07-28** (built on the v2 Python SDK) and still serves clients on 2025-11-25 and earlier.
 
 ---
 
@@ -469,6 +475,8 @@ Every tool returns the same shape:
 - **Blank source fields** show up in `missing_fields` with `status: "partial"`, and their values are `null`, never `""` or `0`.
 - **Companies without subsidiaries** have a blank `/consolidated/` page on Screener. The server falls back to standalone figures and says so in `warnings`.
 - **Non-canonical symbols** like `MOTHERSONWIR` resolve through Screener search. A confident match proceeds and is recorded in `meta.interpreted_as`. An ambiguous one returns `error.candidates` (top 3), so you can retry in one call.
+- **Errors are flagged on the wire.** When `status` is `"error"`, the MCP result also has `isError: true`, so clients treat the call as failed rather than as an empty success.
+- **Slow tools report progress.** Screens, full analyses, forward outlook and document search send a progress notification every few seconds (when the client asks for progress), so a long call never looks hung.
 - **Implausible ratio history**, such as days-based metrics out of range or a Cash Conversion Cycle that doesn't equal debtor + inventory − payable days, is kept but marked `data_quality_flag: true`, with a reason.
 
 ---
@@ -551,7 +559,7 @@ screener-mcp/
 ├── scripts/canary.py               # Daily live check against Screener.in (see .github/workflows/canary.yml)
 ├── tests/                          # Offline tests (no network) + a real-page fixture
 └── src/screener_mcp/
-    ├── server.py                   # FastMCP — all 30 tool definitions
+    ├── server.py                   # MCPServer (MCP SDK v2) — all 30 tool definitions
     ├── client.py                   # Screener.in HTTP client + auth
     ├── core/
     │   ├── envelope.py             # Standard response envelope for every tool

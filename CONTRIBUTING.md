@@ -67,7 +67,7 @@ screener-mcp/
 │   └── fixtures/                      # Trimmed real Screener pages
 ├── scripts/canary.py                  # Live checks against Screener.in (runs daily in CI)
 └── src/screener_mcp/
-    ├── server.py                      # FastMCP — all 30 tool definitions (start here)
+    ├── server.py                      # MCPServer (MCP SDK v2) — all 30 tool definitions (start here)
     ├── client.py                      # Screener.in HTTP client + auth
     ├── core/
     │   ├── envelope.py                # Standard response envelope (ToolResult, ToolError)

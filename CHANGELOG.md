@@ -1,8 +1,31 @@
 # Changelog
 
-## Unreleased
+## 0.6.0 — 2026-11-12
+
+Brings the server up to the latest MCP standards: protocol **2026-07-28** via
+the v2 Python SDK, while still serving older clients.
+
+### Added
+- **MCP prompts**: `deep_dive(symbol)` and `value_screen(min_roce, max_pe)`.
+- **Progress notifications** from the slow tools (`screen_stocks`,
+  `get_52_week_low_candidates`, `get_relative_valuation`, `get_forward_outlook`,
+  `compare_companies`, `get_full_analysis`, `ask_company_research`,
+  `search_market_commentary`) every few seconds while they run
+  (`SCREENER_PROGRESS_INTERVAL`, default 5s).
+- **Server identity**: title, description, version, website and icon are
+  advertised to clients.
+- **`server.json`** for listing in the official MCP Registry.
+- Protocol-level tests (`tests/test_protocol.py`) that drive the server
+  through a real MCP client.
 
 ### Changed
+- **Requires `mcp>=2.3`** (was `mcp>=1.0,<2`, a lower bound that was too old
+  for features the server already used). `FastMCP` is now `MCPServer`. The
+  server speaks MCP 2026-07-28 and negotiates 2025-11-25 and earlier with
+  older clients — tested with both v1 and v2 clients over stdio and HTTP.
+- **Error results set `isError: true`** on the wire. The response envelope is
+  unchanged; previously an error envelope looked like a successful call.
+- Every tool advertises an `outputSchema` and returns `structuredContent`.
 - **The HTTP transport now binds to `127.0.0.1` by default** (was `0.0.0.0`),
   so an unauthenticated server holding your Screener credentials isn't exposed
   to the network. Set `MCP_HOST=0.0.0.0` to expose it deliberately; the Docker

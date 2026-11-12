@@ -1,0 +1,38 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.LogeshR15/screener-mcp",
+  "title": "Screener Stock Research",
+  "description": "Indian stock research (BSE/NSE) via Screener.in: financials, screens, filings, earnings calls.",
+  "websiteUrl": "https://logeshr15.github.io/screener-mcp/",
+  "repository": {
+    "url": "https://github.com/LogeshR15/screener-mcp",
+    "source": "github"
+  },
+  "version": "0.6.0",
+  "packages": [
+    {
+      "registryType": "pypi",
+      "registryBaseUrl": "https://pypi.org",
+      "identifier": "screener-mcp",
+      "version": "0.6.0",
+      "runtimeHint": "uvx",
+      "transport": {
+        "type": "stdio"
+      },
+      "environmentVariables": [
+        {
+          "name": "SCREENER_USERNAME",
+          "description": "Screener.in login email. Optional; without it only public data is available and fundamental screens are disabled.",
+          "isRequired": false,
+          "isSecret": false
+        },
+        {
+          "name": "SCREENER_PASSWORD",
+          "description": "Screener.in password. Optional; pair with SCREENER_USERNAME.",
+          "isRequired": false,
+          "isSecret": true
+        }
+      ]
+    }
+  ]
+}

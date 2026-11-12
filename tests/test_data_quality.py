@@ -632,7 +632,7 @@ async def test_dashboard_widget_is_an_mcp_app_resource():
     tools = {t.name: t for t in await server.mcp.list_tools()}
     uri = tools["compare_companies"].meta["ui"]["resourceUri"]
     resources = {str(r.uri): r for r in await server.mcp.list_resources()}
-    assert resources[uri].mimeType == "text/html;profile=mcp-app"
+    assert resources[uri].mime_type == "text/html;profile=mcp-app"
     html = list(await server.mcp.read_resource(uri))[0].content
     assert "/*__EXT_APPS_BUNDLE__*/" not in html and "globalThis.ExtApps={" in html
 
