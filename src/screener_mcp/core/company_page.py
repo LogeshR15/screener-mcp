@@ -298,11 +298,17 @@ async def _get_page(symbol: str, financial_type: str) -> Optional[str]:
     return html
 
 
-def page_has_data(html: str) -> bool:
-    """True if the page carries a price or any P&L values.
+_STANDALONE_TAG_RE = re.compile(r"\(S\)")
 
-    A /consolidated/ page for a company with no subsidiaries renders the full
-    layout with every number empty — this is how we tell it apart.
+
+def page_has_data(html: str) -> bool:
+    """True if the page carries a price or any P&L values of its own.
+
+    A /consolidated/ page for a company with no subsidiaries has no figures of
+    its own. Screener used to render it with every number empty; it now
+    backfills the statement tables with standalone figures, tags each such
+    period header "(S)", and still leaves the price and ratios blank. Columns
+    tagged "(S)" therefore don't count as data here.
     """
     soup = BeautifulSoup(html, "lxml")
     top = soup.find(id="top-ratios")
@@ -310,10 +316,13 @@ def page_has_data(html: str) -> bool:
         return True
     pl = soup.find(id="profit-loss")
     if pl:
+        headers = pl.select("thead th")
+        backfilled = {i for i, th in enumerate(headers) if _STANDALONE_TAG_RE.search(th.get_text(" ", strip=True))}
         for tr in pl.select("tbody tr"):
             # first cell is the row label ("Sales", "Expenses"...) — skip it
-            if any(td.get_text(strip=True) for td in tr.find_all("td")[1:]):
-                return True
+            for i, td in enumerate(tr.find_all("td")):
+                if i and i not in backfilled and td.get_text(strip=True):
+                    return True
     return False
 
 

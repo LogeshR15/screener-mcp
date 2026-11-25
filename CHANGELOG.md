@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+- **Consolidated → standalone fallback stopped working** for companies without
+  subsidiaries (e.g. MSUMI), so the overview came back with price, market cap
+  and every ratio missing. Screener now fills their consolidated page with
+  standalone figures tagged "(S)" while leaving the headline ratios blank;
+  those columns no longer count as consolidated data. (#19)
+
 ## 0.6.0 — 2026-11-12
 
 Brings the server up to the latest MCP standards: protocol **2026-07-28** via

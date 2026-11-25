@@ -25,9 +25,13 @@ from screener_mcp.tools.technical_tools import split_query
 # ─── fixtures ─────────────────────────────────────────────────────────────────
 
 
-def company_html(price="34.3", high="53.6", low="34.3", roce="38.9", pl_values=("9,319", "11,478")):
+def company_html(price="34.3", high="53.6", low="34.3", roce="38.9", pl_values=("9,319", "11,478"),
+                 standalone_tag=False):
     """Minimal Screener company page. Pass '' values to mimic the blank
-    /consolidated/ page served for companies without subsidiaries."""
+    /consolidated/ page served for companies without subsidiaries, and
+    ``standalone_tag=True`` to mark every period "(S)" — standalone figures
+    Screener backfills into such a page (issue #19)."""
+    tag = " (S)" if standalone_tag else ""
     def li(name, *nums):
         spans = "".join(f'<span class="number">{n}</span>' for n in nums)
         return f'<li><span class="name">{name}</span><span class="nowrap value">{spans}</span></li>'
@@ -48,7 +52,7 @@ def company_html(price="34.3", high="53.6", low="34.3", roce="38.9", pl_values=(
       {li("ROE", "32.4" if price else "")}
     </ul>
     <section id="profit-loss"><table>
-      <thead><tr><th></th><th>Mar 2025</th><th>Mar 2026</th></tr></thead>
+      <thead><tr><th></th><th>Mar 2025{tag}</th><th>Mar 2026{tag}</th></tr></thead>
       <tbody><tr><td>Sales</td>{pl_cells}</tr><tr><td>Expenses</td><td></td><td></td></tr></tbody>
     </table></section>
     </body></html>
@@ -56,6 +60,7 @@ def company_html(price="34.3", high="53.6", low="34.3", roce="38.9", pl_values=(
 
 
 BLANK_PAGE = company_html(price="", high="", low="", roce="", pl_values=("", ""))
+BACKFILLED_PAGE = company_html(price="", high="", low="", roce="", standalone_tag=True)
 FULL_PAGE = company_html()
 
 SCREEN_HTML = """
@@ -114,6 +119,15 @@ def test_page_has_data_detects_blank_consolidated_page():
     assert not page_has_data(BLANK_PAGE)
 
 
+def test_standalone_backfill_on_consolidated_page_is_not_data():
+    # Issue #19: Screener fills the /consolidated/ page with "(S)" standalone
+    # figures but leaves price and ratios blank.
+    assert not page_has_data(BACKFILLED_PAGE)
+    # A real consolidated column next to backfilled ones still counts.
+    mixed = BACKFILLED_PAGE.replace("Mar 2026 (S)", "Mar 2026")
+    assert page_has_data(mixed)
+
+
 def test_missing_fields_named_instead_of_silent_blanks():
     assert overview_missing_fields(parse_overview(FULL_PAGE)) == []
     missing = overview_missing_fields(parse_overview(BLANK_PAGE))
@@ -144,6 +158,15 @@ async def test_blank_consolidated_page_falls_back_to_standalone(fake_pages):
     assert env["data"]["financial_type"] == "standalone"
     assert env["data"]["current_price"] == 34.3 and env["data"]["key_ratios"]["ROCE"] == 38.9
     assert any("no consolidated financials" in w for w in env["warnings"])
+
+
+async def test_backfilled_consolidated_page_falls_back_to_standalone(fake_pages):
+    fake_pages[("MSUMI", "consolidated")] = BACKFILLED_PAGE
+    fake_pages[("MSUMI", "standalone")] = FULL_PAGE
+    env = await server.get_company_overview("MSUMI")
+    assert env["status"] == "ok"
+    assert env["data"]["financial_type"] == "standalone"
+    assert env["data"]["current_price"] == 34.3
 
 
 async def test_page_with_no_data_anywhere_reports_partial(fake_pages):
